@@ -25,7 +25,7 @@ from app.schemas.types import SystemConfigKey, MediaType
 lock = Lock()
 
 
-class CustomSubscribe(_PluginBase):
+class SatoshiRss(_PluginBase):
     # 插件名称
     plugin_name = "订阅-Satoshi"
     # 插件描述

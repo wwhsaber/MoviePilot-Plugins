@@ -91,6 +91,7 @@ class SatoshiRss(_PluginBase):
             self._clear = config.get("clear")
             self._action = config.get("action")
             self._save_path = config.get("save_path")
+            self._episode_range = config.get("episode_range")
 
         if self._onlyonce:
             self._scheduler = BackgroundScheduler(timezone=settings.TZ)

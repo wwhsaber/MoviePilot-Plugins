@@ -22,5 +22,17 @@
         "history": {
             "v1.0": "init"
         }
+    },
+    "SatoshiRss": {
+        "name": "订阅-Satoshi",
+        "description": "定时刷新RSS报文，识别内容后添加订阅或直接下载。允许对每条rss进行正则处理",
+        "labels": "订阅",
+        "version": "1.0",
+        "icon": "customsubscribe.webp",
+        "author": "wwhsaber",
+        "level": 2,
+        "history": {
+            "v1.0": "init"
+        }
     }
 }

@@ -33,7 +33,7 @@ class SatoshiRss(_PluginBase):
     # 插件图标
     plugin_icon = "customsubscribe.webp"
     # 插件版本
-    plugin_version = "1.0"
+    plugin_version = "1.1"
     # 插件作者
     plugin_author = "wwhsaber"
     # 作者主页
@@ -91,7 +91,7 @@ class SatoshiRss(_PluginBase):
             self._clear = config.get("clear")
             self._action = config.get("action")
             self._save_path = config.get("save_path")
-            self._episode_range = config.get("episode_range")
+            # self._episode_range = config.get("episode_range")
 
         if self._onlyonce:
             self._scheduler = BackgroundScheduler(timezone=settings.TZ)
@@ -361,28 +361,28 @@ class SatoshiRss(_PluginBase):
                             }
                         ]
                     },
-                    {
-                        'component': 'VRow',
-                        'content': [
-                            {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 6
-                                },
-                                'content': [
-                                    {
-                                        'component': 'VTextField',
-                                        'props': {
-                                            'model': 'episode_range',
-                                            'label': '集数范围',
-                                            'placeholder': '支持正则表达式'
-                                        }
-                                    }
-                                ]
-                            },
-                        ]
-                    },
+                    # {
+                    #     'component': 'VRow',
+                    #     'content': [
+                    #         {
+                    #             'component': 'VCol',
+                    #             'props': {
+                    #                 'cols': 12,
+                    #                 'md': 6
+                    #             },
+                    #             'content': [
+                    #                 {
+                    #                     'component': 'VTextField',
+                    #                     'props': {
+                    #                         'model': 'episode_range',
+                    #                         'label': '集数范围',
+                    #                         'placeholder': '支持正则表达式'
+                    #                     }
+                    #                 }
+                    #             ]
+                    #         },
+                    #     ]
+                    # },
                     {
                         'component': 'VRow',
                         'content': [
@@ -678,24 +678,25 @@ class SatoshiRss(_PluginBase):
                                                    f"{title} {description}", re.IGNORECASE):
                         logger.info(f"{title} - {description} 不符合排除规则")
                         continue
-                    # 检查独立规则
-                    if url_include and not re.search(r"%s" % url_include,
-                                                    f"{title} {description}", re.IGNORECASE):
-                        logger.info(f"{title} - {description} 不符合包含规则")
-                        continue
-                    if url_exclude and re.search(r"%s" % url_exclude,
-                                                f"{title} {description}", re.IGNORECASE):
-                        logger.info(f"{title} - {description} 不符合排除规则")
-                        continue
+                    # # 检查独立规则
+                    # if url_include and not re.search(r"%s" % url_include,
+                    #                                 f"{title} {description}", re.IGNORECASE):
+                    #     logger.info(f"{title} - {description} 不符合包含规则")
+                    #     continue
+                    # if url_exclude and re.search(r"%s" % url_exclude,
+                    #                             f"{title} {description}", re.IGNORECASE):
+                    #     logger.info(f"{title} - {description} 不符合排除规则")
+                    #     continue
                     # 识别媒体信息
                     meta = MetaInfo(title=title, subtitle=description)
                     if not meta.name:
                         logger.warn(f"{title} 未识别到有效数据")
                         continue
-                    if self._episode_range and not re.search(r"%s" % self._episode_range,
-                                                           f"{meta.season_episode}", re.IGNORECASE):
+                    if url_include and not re.search(r"%s" % url_include,
+                                                f"{meta.season_episode}", re.IGNORECASE):
                         logger.info(f"{title} - {meta.season_episode} 不符合集数范围")
                         continue
+                    mediainfo: MediaInfo = self.chain.recognize_media(meta=meta)
                     if not mediainfo:
                         logger.warn(f'未识别到媒体信息，标题：{title}')
                         continue

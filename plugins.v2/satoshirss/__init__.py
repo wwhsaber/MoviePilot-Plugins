@@ -138,7 +138,19 @@ class SatoshiRss(_PluginBase):
                 "endpoint": self.delete_history,
                 "methods": ["GET"],
                 "summary": "删除自定义订阅历史记录",
-            }
+            },
+            {
+                "path": "/add_rss",
+                "endpoint": self.add_rss,
+                "methods": ["GET"],
+                "summary": "添加RSS订阅",
+            },
+            {
+                "path": "/del_rss",
+                "endpoint": self.del_rss,
+                "methods": ["GET"],
+                "summary": "删除RSS订阅",
+            },
         ]
 
     def get_service(self) -> List[Dict[str, Any]]:
@@ -270,13 +282,142 @@ class SatoshiRss(_PluginBase):
                                 "props": {"cols": 12},
                                 "content": [
                                     {
-                                        "component": "VTextarea",
-                                        "props": {
-                                            "model": "address",
-                                            "label": "RSS地址",
-                                            "rows": 3,
-                                            "placeholder": '每行一个RSS地址，或使用JSON格式配置高级选项：[{"url":"...", "title":"...", "tmdbid":"..."}]',
-                                        },
+                                        "component": "VCard",
+                                        "props": {"class": "pa-5"},
+                                        "content": [
+                                            {
+                                                "component": "div",
+                                                "class": "d-flex justify-space-between align-center mb-4",
+                                                "content": [
+                                                    {
+                                                        "component": "h3",
+                                                        "text": "RSS地址管理",
+                                                    },
+                                                    {
+                                                        "component": "VBtn",
+                                                        "props": {
+                                                            "color": "primary",
+                                                            "small": True,
+                                                        },
+                                                        "text": "添加RSS",
+                                                        "events": {
+                                                            "click": {
+                                                                "api": "plugin/SatoshiRss/add_rss",
+                                                                "method": "get",
+                                                                "params": {
+                                                                    "apikey": settings.API_TOKEN
+                                                                },
+                                                            }
+                                                        },
+                                                    },
+                                                ],
+                                            },
+                                            *[
+                                                {
+                                                    "component": "VRow",
+                                                    "props": {"align": "center"},
+                                                    "content": [
+                                                        {
+                                                            "component": "VCol",
+                                                            "props": {
+                                                                "cols": 12,
+                                                                "md": 5,
+                                                            },
+                                                            "content": [
+                                                                {
+                                                                    "component": "VTextField",
+                                                                    "props": {
+                                                                        "model": f"address[{i}].url",
+                                                                        "label": "RSS地址",
+                                                                        "placeholder": "输入RSS URL",
+                                                                        "outlined": True,
+                                                                        "dense": True,
+                                                                        "hide-details": True,
+                                                                    },
+                                                                }
+                                                            ],
+                                                        },
+                                                        {
+                                                            "component": "VCol",
+                                                            "props": {
+                                                                "cols": 12,
+                                                                "md": 3,
+                                                            },
+                                                            "content": [
+                                                                {
+                                                                    "component": "VTextField",
+                                                                    "props": {
+                                                                        "model": f"address[{i}].title",
+                                                                        "label": "标题",
+                                                                        "placeholder": "可选",
+                                                                        "outlined": True,
+                                                                        "dense": True,
+                                                                        "hide-details": True,
+                                                                    },
+                                                                }
+                                                            ],
+                                                        },
+                                                        {
+                                                            "component": "VCol",
+                                                            "props": {
+                                                                "cols": 12,
+                                                                "md": 3,
+                                                            },
+                                                            "content": [
+                                                                {
+                                                                    "component": "VTextField",
+                                                                    "props": {
+                                                                        "model": f"address[{i}].tmdbid",
+                                                                        "label": "TMDB ID",
+                                                                        "placeholder": "可选",
+                                                                        "outlined": True,
+                                                                        "dense": True,
+                                                                        "hide-details": True,
+                                                                    },
+                                                                }
+                                                            ],
+                                                        },
+                                                        {
+                                                            "component": "VCol",
+                                                            "props": {
+                                                                "cols": 12,
+                                                                "md": 1,
+                                                            },
+                                                            "content": [
+                                                                {
+                                                                    "component": "VBtn",
+                                                                    "props": {
+                                                                        "icon": True,
+                                                                        "color": "error",
+                                                                    },
+                                                                    "content": [
+                                                                        {
+                                                                            "component": "VIcon",
+                                                                            "text": "mdi-delete",
+                                                                        }
+                                                                    ],
+                                                                    "events": {
+                                                                        "click": {
+                                                                            "api": "plugin/SatoshiRss/del_rss",
+                                                                            "method": "get",
+                                                                            "params": {
+                                                                                "index": i,
+                                                                                "apikey": settings.API_TOKEN,
+                                                                            },
+                                                                        }
+                                                                    },
+                                                                }
+                                                            ],
+                                                        },
+                                                    ],
+                                                }
+                                                for i, _ in enumerate(
+                                                    self._address
+                                                    if isinstance(self._address, list)
+                                                    else []
+                                                )
+                                            ],
+                                        ],
                                     }
                                 ],
                             }
@@ -531,6 +672,48 @@ class SatoshiRss(_PluginBase):
         except Exception as e:
             logger.error("退出插件失败：%s" % str(e))
 
+    def add_rss(self, apikey: str):
+        """
+        添加RSS订阅
+        """
+        if apikey != settings.API_TOKEN:
+            return schemas.Response(success=False, message="API密钥错误")
+        if not isinstance(self._address, list):
+            # 初始化
+            self._address = []
+            if self._address and isinstance(self._address, str):
+                # 尝试迁移旧数据
+                try:
+                    self._address = json.loads(self._address)
+                except:
+                    pass
+
+        if not isinstance(self._address, list):
+            self._address = []
+
+        self._address.append({"url": "", "title": "", "tmdbid": ""})
+        self.__update_config()
+        return schemas.Response(success=True, message="添加成功")
+
+    def del_rss(self, index: int, apikey: str):
+        """
+        删除RSS订阅
+        """
+        if apikey != settings.API_TOKEN:
+            return schemas.Response(success=False, message="API密钥错误")
+        if not isinstance(self._address, list):
+            return schemas.Response(success=False, message="配置格式错误")
+
+        try:
+            index = int(index)
+            if 0 <= index < len(self._address):
+                self._address.pop(index)
+                self.__update_config()
+                return schemas.Response(success=True, message="删除成功")
+        except:
+            pass
+        return schemas.Response(success=False, message="删除失败")
+
     def delete_history(self, key: str, apikey: str):
         """
         删除同步历史记录
@@ -659,10 +842,12 @@ class SatoshiRss(_PluginBase):
                     if not meta.name:
                         logger.warn(f"{title} 未识别到有效数据")
                         continue
+                    # 使用配置的TMDB ID辅助识别
+                    tmdbid = int(rss_tmdbid) if rss_tmdbid else None
                     mediainfo: MediaInfo = self.chain.recognize_media(
                         meta=meta,
                         mtype=MediaType.TV,
-                        tmdbid=int(rss_tmdbid) if rss_tmdbid else None,
+                        tmdbid=tmdbid,
                     )
                     if not mediainfo:
                         logger.warn(f"未识别到媒体信息，标题：{title}")

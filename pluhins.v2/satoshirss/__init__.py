@@ -25,21 +25,21 @@ from app.schemas.types import SystemConfigKey, MediaType
 lock = Lock()
 
 
-class RssSubscribe(_PluginBase):
+class SatoshiRss(_PluginBase):
     # 插件名称
-    plugin_name = "自定义订阅-king"
+    plugin_name = "订阅-Satoshi"
     # 插件描述
     plugin_desc = "定时刷新RSS报文，识别内容后添加订阅或直接下载。"
     # 插件图标
-    plugin_icon = "rss.png"
+    plugin_icon = "customsubscribe.webp"
     # 插件版本
-    plugin_version = "1.0"
+    plugin_version = "1.1"
     # 插件作者
     plugin_author = "wwhsaber"
     # 作者主页
     author_url = "https://github.com/wwhsaber"
     # 插件配置项ID前缀
-    plugin_config_prefix = "rsssubscribe_"
+    plugin_config_prefix = "satoshirss_"
     # 加载顺序
     plugin_order = 19
     # 可使用的用户级别
@@ -91,10 +91,11 @@ class RssSubscribe(_PluginBase):
             self._clear = config.get("clear")
             self._action = config.get("action")
             self._save_path = config.get("save_path")
+            # self._episode_range = config.get("episode_range")
 
         if self._onlyonce:
             self._scheduler = BackgroundScheduler(timezone=settings.TZ)
-            logger.info(f"自定义订阅-king服务启动，立即运行一次")
+            logger.info(f"自定义订阅pro服务启动，立即运行一次")
             self._scheduler.add_job(func=self.check, trigger='date',
                                     run_date=datetime.datetime.now(
                                         tz=pytz.timezone(settings.TZ)) + datetime.timedelta(seconds=3)
@@ -141,7 +142,7 @@ class RssSubscribe(_PluginBase):
                 "path": "/delete_history",
                 "endpoint": self.delete_history,
                 "methods": ["GET"],
-                "summary": "删除自定义订阅-king历史记录"
+                "summary": "删除自定义订阅pro历史记录"
             }
         ]
 
@@ -158,16 +159,16 @@ class RssSubscribe(_PluginBase):
         """
         if self._enabled and self._cron:
             return [{
-                "id": "RssSubscribe",
-                "name": "自定义订阅-king服务",
+                "id": "CustomSubscribe",
+                "name": "自定义订阅pro服务",
                 "trigger": CronTrigger.from_crontab(self._cron),
                 "func": self.check,
                 "kwargs": {}
             }]
         elif self._enabled:
             return [{
-                "id": "RssSubscribe",
-                "name": "自定义订阅-king服务",
+                "id": "CustomSubscribe",
+                "name": "自定义订阅pro服务",
                 "trigger": "interval",
                 "func": self.check,
                 "kwargs": {"minutes": 30}
@@ -360,6 +361,50 @@ class RssSubscribe(_PluginBase):
                             }
                         ]
                     },
+                    # {
+                    #     'component': 'VRow',
+                    #     'content': [
+                    #         {
+                    #             'component': 'VCol',
+                    #             'props': {
+                    #                 'cols': 12,
+                    #                 'md': 6
+                    #             },
+                    #             'content': [
+                    #                 {
+                    #                     'component': 'VTextField',
+                    #                     'props': {
+                    #                         'model': 'episode_range',
+                    #                         'label': '集数范围',
+                    #                         'placeholder': '支持正则表达式'
+                    #                     }
+                    #                 }
+                    #             ]
+                    #         },
+                    #     ]
+                    # },
+                    {
+                        'component': 'VRow',
+                        'content': [
+
+                            {
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VTextField',
+                                        'props': {
+                                            'model': 'save_path',
+                                            'label': '保存目录',
+                                            'placeholder': '下载时有效，留空自动'
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    },
                     {
                         'component': 'VRow',
                         'content': [
@@ -465,7 +510,7 @@ class RssSubscribe(_PluginBase):
                             },
                             'events': {
                                 'click': {
-                                    'api': 'plugin/RssSubscribe/delete_history',
+                                    'api': 'plugin/CustomSubscribe/delete_history',
                                     'method': 'get',
                                     'params': {
                                         'key': title,
@@ -633,19 +678,23 @@ class RssSubscribe(_PluginBase):
                                                    f"{title} {description}", re.IGNORECASE):
                         logger.info(f"{title} - {description} 不符合排除规则")
                         continue
-                    # 检查独立规则
-                    if url_include and not re.search(r"%s" % url_include,
-                                                    f"{title} {description}", re.IGNORECASE):
-                        logger.info(f"{title} - {description} 不符合包含规则")
-                        continue
-                    if url_exclude and re.search(r"%s" % url_exclude,
-                                                f"{title} {description}", re.IGNORECASE):
-                        logger.info(f"{title} - {description} 不符合排除规则")
-                        continue
+                    # # 检查独立规则
+                    # if url_include and not re.search(r"%s" % url_include,
+                    #                                 f"{title} {description}", re.IGNORECASE):
+                    #     logger.info(f"{title} - {description} 不符合包含规则")
+                    #     continue
+                    # if url_exclude and re.search(r"%s" % url_exclude,
+                    #                             f"{title} {description}", re.IGNORECASE):
+                    #     logger.info(f"{title} - {description} 不符合排除规则")
+                    #     continue
                     # 识别媒体信息
                     meta = MetaInfo(title=title, subtitle=description)
                     if not meta.name:
                         logger.warn(f"{title} 未识别到有效数据")
+                        continue
+                    if url_include and not re.search(r"%s" % url_include,
+                                                f"{meta.season_episode}", re.IGNORECASE):
+                        logger.info(f"{title} - {meta.season_episode} 不符合集数范围")
                         continue
                     mediainfo: MediaInfo = self.chain.recognize_media(meta=meta)
                     if not mediainfo:

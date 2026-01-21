@@ -1,5 +1,6 @@
 import datetime
 import re
+import json
 import traceback
 from pathlib import Path
 from threading import Lock
@@ -269,30 +270,12 @@ class SatoshiRss(_PluginBase):
                                 "props": {"cols": 12},
                                 "content": [
                                     {
-                                        "component": "VInput",
+                                        "component": "VTextarea",
                                         "props": {
                                             "model": "address",
-                                            "type": "list",
-                                            "title": "RSS地址管理",
-                                            "show_add": True,
-                                            "add_text": "添加RSS",
-                                            "headers": [
-                                                {
-                                                    "text": "RSS地址",
-                                                    "value": "url",
-                                                    "width": "50%",
-                                                },
-                                                {
-                                                    "text": "标题",
-                                                    "value": "title",
-                                                    "width": "25%",
-                                                },
-                                                {
-                                                    "text": "TMDB ID",
-                                                    "value": "tmdbid",
-                                                    "width": "25%",
-                                                },
-                                            ],
+                                            "label": "RSS地址",
+                                            "rows": 3,
+                                            "placeholder": '每行一个RSS地址，或使用JSON格式配置高级选项：[{"url":"...", "title":"...", "tmdbid":"..."}]',
                                         },
                                     }
                                 ],
@@ -603,13 +586,27 @@ class SatoshiRss(_PluginBase):
         conf_addresses = []
         if isinstance(self._address, list):
             conf_addresses = self._address
-        else:
-            conf_addresses = [{"url": x} for x in self._address.split("\n") if x]
+        elif isinstance(self._address, str):
+            # 尝试解析JSON
+            try:
+                conf_addresses = json.loads(self._address)
+                if not isinstance(conf_addresses, list):
+                    conf_addresses = [{"url": self._address}]
+            except:
+                # 兼容旧配置：多行字符串
+                lines = self._address.split("\n") if self._address else []
+                conf_addresses = [{"url": line} for line in lines if line]
 
         for conf in conf_addresses:
-            url = conf.get("url")
-            rss_title = conf.get("title")
-            rss_tmdbid = conf.get("tmdbid")
+            # 兼容字典或字符串配置
+            if isinstance(conf, str):
+                url = conf
+                rss_title = None
+                rss_tmdbid = None
+            else:
+                url = conf.get("url")
+                rss_title = conf.get("title")
+                rss_tmdbid = conf.get("tmdbid")
 
             # 处理每一个RSS链接
             if not url:

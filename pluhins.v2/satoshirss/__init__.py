@@ -1,7 +1,6 @@
 import datetime
 import re
 import traceback
-import urllib.parse
 from pathlib import Path
 from threading import Lock
 from typing import Optional, Any, List, Dict, Tuple
@@ -12,7 +11,6 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app import schemas
 from app.chain.download import DownloadChain
-from app.chain.search import SearchChain
 from app.chain.subscribe import SubscribeChain
 from app.core.config import settings
 from app.core.context import MediaInfo, TorrentInfo, Context
@@ -48,10 +46,6 @@ class SatoshiRss(_PluginBase):
     # 私有变量
     _scheduler: Optional[BackgroundScheduler] = None
     _cache_path: Optional[Path] = None
-    rsshelper = None
-    downloadchain = None
-    searchchain = None
-    subscribechain = None
 
     # 配置属性
     _enabled: bool = False
@@ -67,18 +61,16 @@ class SatoshiRss(_PluginBase):
     _clearflag: bool = False
     _action: str = "subscribe"
     _save_path: str = ""
+    _size_range: str = ""
 
     def init_plugin(self, config: dict = None):
-        self.rsshelper = RssHelper()
-        self.downloadchain = DownloadChain()
-        self.searchchain = SearchChain()
-        self.subscribechain = SubscribeChain()
 
         # 停止现有任务
         self.stop_service()
 
         # 配置
         if config:
+            self.__validate_and_fix_config(config=config)
             self._enabled = config.get("enabled")
             self._cron = config.get("cron")
             self._notify = config.get("notify")
@@ -91,15 +83,17 @@ class SatoshiRss(_PluginBase):
             self._clear = config.get("clear")
             self._action = config.get("action")
             self._save_path = config.get("save_path")
-            # self._episode_range = config.get("episode_range")
+            self._size_range = config.get("size_range")
 
         if self._onlyonce:
             self._scheduler = BackgroundScheduler(timezone=settings.TZ)
-            logger.info(f"自定义订阅pro服务启动，立即运行一次")
-            self._scheduler.add_job(func=self.check, trigger='date',
-                                    run_date=datetime.datetime.now(
-                                        tz=pytz.timezone(settings.TZ)) + datetime.timedelta(seconds=3)
-                                    )
+            logger.info(f"自定义订阅服务启动，立即运行一次")
+            self._scheduler.add_job(
+                func=self.check,
+                trigger="date",
+                run_date=datetime.datetime.now(tz=pytz.timezone(settings.TZ))
+                + datetime.timedelta(seconds=3),
+            )
 
             # 启动任务
             if self._scheduler.get_jobs():
@@ -142,7 +136,7 @@ class SatoshiRss(_PluginBase):
                 "path": "/delete_history",
                 "endpoint": self.delete_history,
                 "methods": ["GET"],
-                "summary": "删除自定义订阅pro历史记录"
+                "summary": "删除自定义订阅历史记录",
             }
         ]
 
@@ -158,21 +152,25 @@ class SatoshiRss(_PluginBase):
         }]
         """
         if self._enabled and self._cron:
-            return [{
-                "id": "CustomSubscribe",
-                "name": "自定义订阅pro服务",
-                "trigger": CronTrigger.from_crontab(self._cron),
-                "func": self.check,
-                "kwargs": {}
-            }]
+            return [
+                {
+                    "id": "CustomSubscribe",
+                    "name": "自定义订阅pro服务",
+                    "trigger": CronTrigger.from_crontab(self._cron),
+                    "func": self.check,
+                    "kwargs": {},
+                }
+            ]
         elif self._enabled:
-            return [{
-                "id": "CustomSubscribe",
-                "name": "自定义订阅pro服务",
-                "trigger": "interval",
-                "func": self.check,
-                "kwargs": {"minutes": 30}
-            }]
+            return [
+                {
+                    "id": "CustomSubscribe",
+                    "name": "自定义订阅pro服务",
+                    "trigger": "interval",
+                    "func": self.check,
+                    "kwargs": {"minutes": 30},
+                }
+            ]
         return []
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
@@ -181,297 +179,255 @@ class SatoshiRss(_PluginBase):
         """
         return [
             {
-                'component': 'VForm',
-                'content': [
+                "component": "VForm",
+                "content": [
                     {
-                        'component': 'VRow',
-                        'content': [
+                        "component": "VRow",
+                        "content": [
                             {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 4
-                                },
-                                'content': [
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
                                     {
-                                        'component': 'VSwitch',
-                                        'props': {
-                                            'model': 'enabled',
-                                            'label': '启用插件',
-                                        }
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "enabled",
+                                            "label": "启用插件",
+                                        },
                                     }
-                                ]
+                                ],
                             },
                             {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 4
-                                },
-                                'content': [
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
                                     {
-                                        'component': 'VSwitch',
-                                        'props': {
-                                            'model': 'notify',
-                                            'label': '发送通知',
-                                        }
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "notify",
+                                            "label": "发送通知",
+                                        },
                                     }
-                                ]
+                                ],
                             },
                             {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 4
-                                },
-                                'content': [
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
                                     {
-                                        'component': 'VSwitch',
-                                        'props': {
-                                            'model': 'onlyonce',
-                                            'label': '立即运行一次',
-                                        }
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "onlyonce",
+                                            "label": "立即运行一次",
+                                        },
                                     }
-                                ]
-                            }
-                        ]
+                                ],
+                            },
+                        ],
                     },
                     {
-                        'component': 'VRow',
-                        'content': [
+                        "component": "VRow",
+                        "content": [
                             {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 6
-                                },
-                                'content': [
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
                                     {
-                                        'component': 'VTextField',
-                                        'props': {
-                                            'model': 'cron',
-                                            'label': '执行周期',
-                                            'placeholder': '5位cron表达式，留空自动'
-                                        }
+                                        "component": "VCronField",
+                                        "props": {
+                                            "model": "cron",
+                                            "label": "执行周期",
+                                            "placeholder": "5位cron表达式，留空自动",
+                                        },
                                     }
-                                ]
+                                ],
                             },
                             {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 6
-                                },
-                                'content': [
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
                                     {
-                                        'component': 'VSelect',
-                                        'props': {
-                                            'model': 'action',
-                                            'label': '动作',
-                                            'items': [
-                                                {'title': '订阅', 'value': 'subscribe'},
-                                                {'title': '下载', 'value': 'download'}
-                                            ]
-                                        }
+                                        "component": "VSelect",
+                                        "props": {
+                                            "model": "action",
+                                            "label": "动作",
+                                            "items": [
+                                                {"title": "订阅", "value": "subscribe"},
+                                                {"title": "下载", "value": "download"},
+                                            ],
+                                        },
                                     }
-                                ]
-                            }
-                        ]
+                                ],
+                            },
+                        ],
                     },
                     {
-                        'component': 'VRow',
-                        'content': [
+                        "component": "VRow",
+                        "content": [
                             {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12
-                                },
-                                'content': [
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
                                     {
-                                        'component': 'VTextarea',
-                                        'props': {
-                                            'model': 'address',
-                                            'label': 'RSS地址',
-                                            'rows': 3,
-                                            'placeholder': '每行一个RSS地址'
-                                        }
+                                        "component": "VInput",
+                                        "props": {
+                                            "model": "address",
+                                            "type": "list",
+                                            "title": "RSS地址管理",
+                                            "show_add": True,
+                                            "add_text": "添加RSS",
+                                            "headers": [
+                                                {
+                                                    "text": "RSS地址",
+                                                    "value": "url",
+                                                    "width": "50%",
+                                                },
+                                                {
+                                                    "text": "标题",
+                                                    "value": "title",
+                                                    "width": "25%",
+                                                },
+                                                {
+                                                    "text": "TMDB ID",
+                                                    "value": "tmdbid",
+                                                    "width": "25%",
+                                                },
+                                            ],
+                                        },
                                     }
-                                ]
+                                ],
                             }
-                        ]
+                        ],
                     },
                     {
-                        'component': 'VRow',
-                        'content': [
+                        "component": "VRow",
+                        "content": [
                             {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 6
-                                },
-                                'content': [
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
                                     {
-                                        'component': 'VTextField',
-                                        'props': {
-                                            'model': 'include',
-                                            'label': '包含',
-                                            'placeholder': '支持正则表达式'
-                                        }
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "include",
+                                            "label": "包含",
+                                            "placeholder": "支持正则表达式",
+                                        },
                                     }
-                                ]
+                                ],
                             },
                             {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 6
-                                },
-                                'content': [
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
                                     {
-                                        'component': 'VTextField',
-                                        'props': {
-                                            'model': 'exclude',
-                                            'label': '排除',
-                                            'placeholder': '支持正则表达式'
-                                        }
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "exclude",
+                                            "label": "排除",
+                                            "placeholder": "支持正则表达式",
+                                        },
                                     }
-                                ]
-                            }
-                        ]
+                                ],
+                            },
+                        ],
                     },
                     {
-                        'component': 'VRow',
-                        'content': [
-
+                        "component": "VRow",
+                        "content": [
                             {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12
-                                },
-                                'content': [
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
                                     {
-                                        'component': 'VTextField',
-                                        'props': {
-                                            'model': 'save_path',
-                                            'label': '保存目录',
-                                            'placeholder': '下载时有效，留空自动'
-                                        }
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "size_range",
+                                            "label": "种子大小(GB)",
+                                            "placeholder": "如：3 或 3-5",
+                                        },
                                     }
-                                ]
-                            }
-                        ]
-                    },
-                    # {
-                    #     'component': 'VRow',
-                    #     'content': [
-                    #         {
-                    #             'component': 'VCol',
-                    #             'props': {
-                    #                 'cols': 12,
-                    #                 'md': 6
-                    #             },
-                    #             'content': [
-                    #                 {
-                    #                     'component': 'VTextField',
-                    #                     'props': {
-                    #                         'model': 'episode_range',
-                    #                         'label': '集数范围',
-                    #                         'placeholder': '支持正则表达式'
-                    #                     }
-                    #                 }
-                    #             ]
-                    #         },
-                    #     ]
-                    # },
-                    {
-                        'component': 'VRow',
-                        'content': [
-
-                            {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12
-                                },
-                                'content': [
-                                    {
-                                        'component': 'VTextField',
-                                        'props': {
-                                            'model': 'save_path',
-                                            'label': '保存目录',
-                                            'placeholder': '下载时有效，留空自动'
-                                        }
-                                    }
-                                ]
-                            }
-                        ]
-                    },
-                    {
-                        'component': 'VRow',
-                        'content': [
-                            {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 4
-                                },
-                                'content': [
-                                    {
-                                        'component': 'VSwitch',
-                                        'props': {
-                                            'model': 'proxy',
-                                            'label': '使用代理服务器',
-                                        }
-                                    }
-                                ]
-                            }, {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 4,
-                                },
-                                'content': [
-                                    {
-                                        'component': 'VSwitch',
-                                        'props': {
-                                            'model': 'filter',
-                                            'label': '使用过滤规则',
-                                        }
-                                    }
-                                ]
+                                ],
                             },
                             {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 4
-                                },
-                                'content': [
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
                                     {
-                                        'component': 'VSwitch',
-                                        'props': {
-                                            'model': 'clear',
-                                            'label': '清理历史记录',
-                                        }
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "save_path",
+                                            "label": "保存目录",
+                                            "placeholder": "下载时有效，留空自动",
+                                        },
                                     }
-                                ]
-                            }
-                        ]
-                    }
-                ]
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "proxy",
+                                            "label": "使用代理服务器",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {
+                                    "cols": 12,
+                                    "md": 4,
+                                },
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "filter",
+                                            "label": "使用订阅优先级规则",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "clear",
+                                            "label": "清理历史记录",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                ],
             }
         ], {
             "enabled": False,
             "notify": True,
             "onlyonce": False,
             "cron": "*/30 * * * *",
-            "address": "",
+            "address": [],
             "include": "",
             "exclude": "",
             "proxy": False,
             "clear": False,
             "filter": False,
             "action": "subscribe",
-            "save_path": ""
+            "save_path": "",
+            "size_range": "",
         }
 
     def get_page(self) -> List[dict]:
@@ -479,19 +435,19 @@ class SatoshiRss(_PluginBase):
         拼装插件详情页面，需要返回页面配置，同时附带数据
         """
         # 查询同步详情
-        historys = self.get_data('history')
+        historys = self.get_data("history")
         if not historys:
             return [
                 {
-                    'component': 'div',
-                    'text': '暂无数据',
-                    'props': {
-                        'class': 'text-center',
-                    }
+                    "component": "div",
+                    "text": "暂无数据",
+                    "props": {
+                        "class": "text-center",
+                    },
                 }
             ]
         # 数据按时间降序排序
-        historys = sorted(historys, key=lambda x: x.get('time'), reverse=True)
+        historys = sorted(historys, key=lambda x: x.get("time"), reverse=True)
         # 拼装页面
         contents = []
         for history in historys:
@@ -501,85 +457,81 @@ class SatoshiRss(_PluginBase):
             time_str = history.get("time")
             contents.append(
                 {
-                    'component': 'VCard',
-                    'content': [
+                    "component": "VCard",
+                    "content": [
                         {
                             "component": "VDialogCloseBtn",
                             "props": {
-                                'innerClass': 'absolute top-0 right-0',
+                                "innerClass": "absolute top-0 right-0",
                             },
-                            'events': {
-                                'click': {
-                                    'api': 'plugin/CustomSubscribe/delete_history',
-                                    'method': 'get',
-                                    'params': {
-                                        'key': title,
-                                        'apikey': settings.API_TOKEN
-                                    }
+                            "events": {
+                                "click": {
+                                    "api": "plugin/RssSubscribe/delete_history",
+                                    "method": "get",
+                                    "params": {
+                                        "key": title,
+                                        "apikey": settings.API_TOKEN,
+                                    },
                                 }
                             },
                         },
                         {
-                            'component': 'div',
-                            'props': {
-                                'class': 'd-flex justify-space-start flex-nowrap flex-row',
+                            "component": "div",
+                            "props": {
+                                "class": "d-flex justify-space-start flex-nowrap flex-row",
                             },
-                            'content': [
+                            "content": [
                                 {
-                                    'component': 'div',
-                                    'content': [
+                                    "component": "div",
+                                    "content": [
                                         {
-                                            'component': 'VImg',
-                                            'props': {
-                                                'src': poster,
-                                                'height': 120,
-                                                'width': 80,
-                                                'aspect-ratio': '2/3',
-                                                'class': 'object-cover shadow ring-gray-500',
-                                                'cover': True
-                                            }
+                                            "component": "VImg",
+                                            "props": {
+                                                "src": poster,
+                                                "height": 120,
+                                                "width": 80,
+                                                "aspect-ratio": "2/3",
+                                                "class": "object-cover shadow ring-gray-500",
+                                                "cover": True,
+                                            },
                                         }
-                                    ]
+                                    ],
                                 },
                                 {
-                                    'component': 'div',
-                                    'content': [
+                                    "component": "div",
+                                    "content": [
                                         {
-                                            'component': 'VCardTitle',
-                                            'props': {
-                                                'class': 'pa-1 pe-5 break-words whitespace-break-spaces'
+                                            "component": "VCardTitle",
+                                            "props": {
+                                                "class": "pa-1 pe-5 break-words whitespace-break-spaces"
                                             },
-                                            'text': title
+                                            "text": title,
                                         },
                                         {
-                                            'component': 'VCardText',
-                                            'props': {
-                                                'class': 'pa-0 px-2'
-                                            },
-                                            'text': f'类型：{mtype}'
+                                            "component": "VCardText",
+                                            "props": {"class": "pa-0 px-2"},
+                                            "text": f"类型：{mtype}",
                                         },
                                         {
-                                            'component': 'VCardText',
-                                            'props': {
-                                                'class': 'pa-0 px-2'
-                                            },
-                                            'text': f'时间：{time_str}'
-                                        }
-                                    ]
-                                }
-                            ]
-                        }
-                    ]
+                                            "component": "VCardText",
+                                            "props": {"class": "pa-0 px-2"},
+                                            "text": f"时间：{time_str}",
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
                 }
             )
 
         return [
             {
-                'component': 'div',
-                'props': {
-                    'class': 'grid gap-3 grid-info-card',
+                "component": "div",
+                "props": {
+                    "class": "grid gap-3 grid-info-card",
                 },
-                'content': contents
+                "content": contents,
             }
         ]
 
@@ -603,32 +555,35 @@ class SatoshiRss(_PluginBase):
         if apikey != settings.API_TOKEN:
             return schemas.Response(success=False, message="API密钥错误")
         # 历史记录
-        historys = self.get_data('history')
+        historys = self.get_data("history")
         if not historys:
             return schemas.Response(success=False, message="未找到历史记录")
         # 删除指定记录
         historys = [h for h in historys if h.get("title") != key]
-        self.save_data('history', historys)
+        self.save_data("history", historys)
         return schemas.Response(success=True, message="删除成功")
 
     def __update_config(self):
         """
         更新设置
         """
-        self.update_config({
-            "enabled": self._enabled,
-            "notify": self._notify,
-            "onlyonce": self._onlyonce,
-            "cron": self._cron,
-            "address": self._address,
-            "include": self._include,
-            "exclude": self._exclude,
-            "proxy": self._proxy,
-            "clear": self._clear,
-            "filter": self._filter,
-            "action": self._action,
-            "save_path": self._save_path
-        })
+        self.update_config(
+            {
+                "enabled": self._enabled,
+                "notify": self._notify,
+                "onlyonce": self._onlyonce,
+                "cron": self._cron,
+                "address": self._address,
+                "include": self._include,
+                "exclude": self._exclude,
+                "proxy": self._proxy,
+                "clear": self._clear,
+                "filter": self._filter,
+                "action": self._action,
+                "save_path": self._save_path,
+                "size_range": self._size_range,
+            }
+        )
 
     def check(self):
         """
@@ -640,23 +595,34 @@ class SatoshiRss(_PluginBase):
         if self._clearflag:
             history = []
         else:
-            history: List[dict] = self.get_data('history') or []
-        for url in self._address.split("\n"):
-            parsed_url = urllib.parse.urlparse(url)
-            query_params = urllib.parse.parse_qs(parsed_url.query)
+            history: List[dict] = self.get_data("history") or []
+        downloadchain = DownloadChain()
+        subscribechain = SubscribeChain()
 
-            url_include = query_params.get('include', [self._include])[0]
-            url_exclude = query_params.get('exclude', [self._exclude])[0]
+        # 处理地址配置，支持字符串或列表
+        conf_addresses = []
+        if isinstance(self._address, list):
+            conf_addresses = self._address
+        else:
+            conf_addresses = [{"url": x} for x in self._address.split("\n") if x]
+
+        for conf in conf_addresses:
+            url = conf.get("url")
+            rss_title = conf.get("title")
+            rss_tmdbid = conf.get("tmdbid")
+
             # 处理每一个RSS链接
             if not url:
                 continue
             logger.info(f"开始刷新RSS：{url} ...")
-            results = self.rsshelper.parse(url, proxy=self._proxy)
+            results = RssHelper().parse(url, proxy=self._proxy)
             if not results:
                 logger.error(f"未获取到RSS数据：{url}")
-                return
+                continue
             # 过滤规则
-            filter_rule = self.systemconfig.get(SystemConfigKey.SubscribeFilterRules)
+            filter_groups = self.systemconfig.get(
+                SystemConfigKey.SubscribeFilterRuleGroups
+            )
             # 解析数据
             for result in results:
                 try:
@@ -669,36 +635,40 @@ class SatoshiRss(_PluginBase):
                     # 检查是否处理过
                     if not title or title in [h.get("key") for h in history]:
                         continue
-                    # 检查所有规则
-                    if self._include and not re.search(r"%s" % self._include,
-                                                       f"{title} {description}", re.IGNORECASE):
+                    # 检查规则
+                    if self._include and not re.search(
+                        r"%s" % self._include, f"{title} {description}", re.IGNORECASE
+                    ):
                         logger.info(f"{title} - {description} 不符合包含规则")
                         continue
-                    if self._exclude and re.search(r"%s" % self._exclude,
-                                                   f"{title} {description}", re.IGNORECASE):
+                    if self._exclude and re.search(
+                        r"%s" % self._exclude, f"{title} {description}", re.IGNORECASE
+                    ):
                         logger.info(f"{title} - {description} 不符合排除规则")
                         continue
-                    # # 检查独立规则
-                    # if url_include and not re.search(r"%s" % url_include,
-                    #                                 f"{title} {description}", re.IGNORECASE):
-                    #     logger.info(f"{title} - {description} 不符合包含规则")
-                    #     continue
-                    # if url_exclude and re.search(r"%s" % url_exclude,
-                    #                             f"{title} {description}", re.IGNORECASE):
-                    #     logger.info(f"{title} - {description} 不符合排除规则")
-                    #     continue
+                    if self._size_range:
+                        sizes = [
+                            float(_size) * 1024**3
+                            for _size in self._size_range.split("-")
+                        ]
+                        if len(sizes) == 1 and float(size) < sizes[0]:
+                            logger.info(f"{title} - 种子大小不符合条件")
+                            continue
+                        elif len(sizes) > 1 and not sizes[0] <= float(size) <= sizes[1]:
+                            logger.info(f"{title} - 种子大小不在指定范围")
+                            continue
                     # 识别媒体信息
                     meta = MetaInfo(title=title, subtitle=description)
                     if not meta.name:
                         logger.warn(f"{title} 未识别到有效数据")
                         continue
-                    if url_include and not re.search(r"%s" % url_include,
-                                                f"{meta.season_episode}", re.IGNORECASE):
-                        logger.info(f"{title} - {meta.season_episode} 不符合集数范围")
-                        continue
-                    mediainfo: MediaInfo = self.chain.recognize_media(meta=meta)
+                    mediainfo: MediaInfo = self.chain.recognize_media(
+                        meta=meta,
+                        mtype=MediaType.TV,
+                        tmdbid=int(rss_tmdbid) if rss_tmdbid else None,
+                    )
                     if not mediainfo:
-                        logger.warn(f'未识别到媒体信息，标题：{title}')
+                        logger.warn(f"未识别到媒体信息，标题：{title}")
                         continue
                     # 种子
                     torrentinfo = TorrentInfo(
@@ -707,79 +677,122 @@ class SatoshiRss(_PluginBase):
                         enclosure=enclosure,
                         page_url=link,
                         size=size,
-                        pubdate=pubdate.strftime("%Y-%m-%d %H:%M:%S") if pubdate else None,
+                        pubdate=(
+                            pubdate.strftime("%Y-%m-%d %H:%M:%S") if pubdate else None
+                        ),
                         site_proxy=self._proxy,
                     )
                     # 过滤种子
                     if self._filter:
                         result = self.chain.filter_torrents(
-                            rule_string=filter_rule,
+                            rule_groups=filter_groups,
                             torrent_list=[torrentinfo],
-                            mediainfo=mediainfo
+                            mediainfo=mediainfo,
                         )
                         if not result:
                             logger.info(f"{title} {description} 不匹配过滤规则")
                             continue
-                    # 查询缺失的媒体信息
-                    exist_flag, no_exists = self.downloadchain.get_no_exists_info(meta=meta, mediainfo=mediainfo)
-                    if exist_flag:
-                        logger.info(f'{mediainfo.title_year} 媒体库中已存在')
+                    # 媒体库已存在的剧集
+                    exist_info: Optional[ExistMediaInfo] = self.chain.media_exists(
+                        mediainfo=mediainfo
+                    )
+                    if mediainfo.type == MediaType.TV:
+                        if exist_info:
+                            exist_season = exist_info.seasons
+                            if exist_season:
+                                exist_episodes = exist_season.get(meta.begin_season)
+                                if exist_episodes and set(meta.episode_list).issubset(
+                                    set(exist_episodes)
+                                ):
+                                    logger.info(
+                                        f"{mediainfo.title_year} {meta.season_episode} 己存在"
+                                    )
+                                    continue
+                    elif exist_info:
+                        # 电影已存在
+                        logger.info(f"{mediainfo.title_year} 己存在")
                         continue
+                    # 下载或订阅
+                    if self._action == "download":
+                        # 添加下载
+                        result = downloadchain.download_single(
+                            context=Context(
+                                meta_info=meta,
+                                media_info=mediainfo,
+                                torrent_info=torrentinfo,
+                            ),
+                            save_path=self._save_path,
+                            username="RSS订阅",
+                        )
+                        if not result:
+                            logger.error(f"{title} 下载失败")
+                            continue
                     else:
-                        if self._action == "download":
-                            if mediainfo.type == MediaType.TV:
-                                if no_exists:
-                                    exist_info = no_exists.get(mediainfo.tmdb_id)
-                                    season_info = exist_info.get(meta.begin_season or 1)
-                                    if not season_info:
-                                        logger.info(f'{mediainfo.title_year} {meta.season} 己存在')
-                                        continue
-                                    if (season_info.episodes
-                                            and not set(meta.episode_list).issubset(set(season_info.episodes))):
-                                        logger.info(f'{mediainfo.title_year} {meta.season_episode} 己存在')
-                                        continue
-                            # 添加下载
-                            result = self.downloadchain.download_single(
-                                context=Context(
-                                    meta_info=meta,
-                                    media_info=mediainfo,
-                                    torrent_info=torrentinfo,
-                                ),
-                                save_path=self._save_path,
-                                username="RSS订阅"
+                        # 检查是否在订阅中
+                        subflag = subscribechain.exists(mediainfo=mediainfo, meta=meta)
+                        if subflag:
+                            logger.info(
+                                f"{mediainfo.title_year} {meta.season} 正在订阅中"
                             )
-                            if not result:
-                                logger.error(f'{title} 下载失败')
-                                continue
-                        else:
-                            # 检查是否在订阅中
-                            subflag = self.subscribechain.exists(mediainfo=mediainfo, meta=meta)
-                            if subflag:
-                                logger.info(f'{mediainfo.title_year} {meta.season} 正在订阅中')
-                                continue
-                            # 添加订阅
-                            self.subscribechain.add(title=mediainfo.title,
-                                                    year=mediainfo.year,
-                                                    mtype=mediainfo.type,
-                                                    tmdbid=mediainfo.tmdb_id,
-                                                    season=meta.begin_season,
-                                                    exist_ok=True,
-                                                    username="RSS订阅")
+                            continue
+                        # 添加订阅
+                        subscribechain.add(
+                            title=mediainfo.title,
+                            year=mediainfo.year,
+                            mtype=mediainfo.type,
+                            tmdbid=mediainfo.tmdb_id,
+                            season=meta.begin_season,
+                            exist_ok=True,
+                            username="RSS订阅",
+                        )
                     # 存储历史记录
-                    history.append({
-                        "title": f"{mediainfo.title} {meta.season}",
-                        "key": f"{title}",
-                        "type": mediainfo.type.value,
-                        "year": mediainfo.year,
-                        "poster": mediainfo.get_poster_image(),
-                        "overview": mediainfo.overview,
-                        "tmdbid": mediainfo.tmdb_id,
-                        "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    })
+                    history.append(
+                        {
+                            "title": f"{mediainfo.title} {meta.season}",
+                            "key": f"{title}",
+                            "type": mediainfo.type.value,
+                            "year": mediainfo.year,
+                            "poster": mediainfo.get_poster_image(),
+                            "overview": mediainfo.overview,
+                            "tmdbid": mediainfo.tmdb_id,
+                            "time": datetime.datetime.now().strftime(
+                                "%Y-%m-%d %H:%M:%S"
+                            ),
+                        }
+                    )
                 except Exception as err:
-                    logger.error(f'刷新RSS数据出错：{str(err)} - {traceback.format_exc()}')
+                    logger.error(
+                        f"刷新RSS数据出错：{str(err)} - {traceback.format_exc()}"
+                    )
             logger.info(f"RSS {url} 刷新完成")
         # 保存历史记录
-        self.save_data('history', history)
+        self.save_data("history", history)
         # 缓存只清理一次
         self._clearflag = False
+
+    def __log_and_notify_error(self, message):
+        """
+        记录错误日志并发送系统通知
+        """
+        logger.error(message)
+        self.systemmessage.put(message, title="自定义订阅")
+
+    def __validate_and_fix_config(self, config: dict = None) -> bool:
+        """
+        检查并修正配置值
+        """
+        size_range = config.get("size_range")
+        if size_range and not self.__is_number_or_range(str(size_range)):
+            self.__log_and_notify_error(
+                f"自定义订阅出错，种子大小设置错误：{size_range}"
+            )
+            config["size_range"] = None
+            return False
+        return True
+
+    @staticmethod
+    def __is_number_or_range(value):
+        """
+        检查字符串是否表示单个数字或数字范围（如'5', '5.5', '5-10' 或 '5.5-10.2'）
+        """
+        return bool(re.match(r"^\d+(\.\d+)?(-\d+(\.\d+)?)?$", value))

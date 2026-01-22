@@ -302,7 +302,7 @@ class SatoshiRss(_PluginBase):
                                                         "text": "添加RSS",
                                                         "events": {
                                                             "click": {
-                                                                "api": "plugin/SatoshiRss/add_rss",
+                                                                "api": "plugin/CustomSubscribe/add_rss",
                                                                 "method": "get",
                                                                 "params": {
                                                                     "apikey": settings.API_TOKEN
@@ -398,7 +398,7 @@ class SatoshiRss(_PluginBase):
                                                                     ],
                                                                     "events": {
                                                                         "click": {
-                                                                            "api": "plugin/SatoshiRss/del_rss",
+                                                                            "api": "plugin/CustomSubscribe/del_rss",
                                                                             "method": "get",
                                                                             "params": {
                                                                                 "index": i,

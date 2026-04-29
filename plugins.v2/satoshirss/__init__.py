@@ -129,6 +129,12 @@ class SatoshiRss(_PluginBase):
                 "summary": "删除RSS详情记录",
             },
             {
+                "path": "/delete_history_item",
+                "endpoint": self.delete_history_item,
+                "methods": ["GET"],
+                "summary": "删除作品历史记录",
+            },
+            {
                 "path": "/refresh_rss",
                 "endpoint": self.refresh_rss,
                 "methods": ["GET"],
@@ -166,28 +172,29 @@ class SatoshiRss(_PluginBase):
                 "component": "VForm",
                 "content": [
                     self.__build_form_section(
-                        "1. 输入RSS链接",
+                        "1. RSS清单",
                         [
                             {
                                 "component": "VRow",
                                 "content": [
                                     {
                                         "component": "VCol",
-                                        "props": {"cols": 12, "md": 9},
+                                        "props": {"cols": 12, "md": 10},
                                         "content": [
                                             {
-                                                "component": "VTextField",
+                                                "component": "VTextarea",
                                                 "props": {
-                                                    "model": "rss_url",
-                                                    "label": "RSS链接",
-                                                    "placeholder": "输入RSS链接，例如：https://example.com/feed.xml",
+                                                    "model": "address",
+                                                    "label": "RSS源清单",
+                                                    "rows": 4,
+                                                    "placeholder": "一行一个RSS地址，可直接编辑后保存",
                                                 },
                                             }
                                         ],
                                     },
                                     {
                                         "component": "VCol",
-                                        "props": {"cols": 12, "md": 3},
+                                        "props": {"cols": 12, "md": 2},
                                         "content": [
                                             {
                                                 "component": "VBtn",
@@ -216,7 +223,7 @@ class SatoshiRss(_PluginBase):
                                 "props": {
                                     "type": "info",
                                     "variant": "tonal",
-                                    "text": "配置页本身不会把接口结果直接写回输入框。新增RSS后请先保存，保存时会自动抓取一次详情；“获取详情”用于刷新已保存的RSS源状态和日志。",
+                                    "text": "直接在这里维护RSS地址，一行一个。保存后会自动抓取新加的RSS；“获取详情”用于刷新当前清单里的全部RSS状态和日志。",
                                 },
                             },
                         ],
@@ -425,26 +432,6 @@ class SatoshiRss(_PluginBase):
                             },
                         ],
                     ),
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [
-                                    {
-                                        "component": "VTextarea",
-                                        "props": {
-                                            "model": "address",
-                                            "label": "RSS源清单",
-                                            "rows": 4,
-                                            "placeholder": "一行一个RSS地址，可直接编辑后保存",
-                                        },
-                                    }
-                                ],
-                            },
-                        ],
-                    },
                 ],
             }
         ], {
@@ -465,8 +452,8 @@ class SatoshiRss(_PluginBase):
         }
 
     def get_page(self) -> List[dict]:
-        records = self.__read_detail_records()
-        if not records:
+        historys = self.__read_history()
+        if not historys:
             return [
                 {
                     "component": "div",
@@ -475,104 +462,15 @@ class SatoshiRss(_PluginBase):
                 }
             ]
 
-        records = sorted(records, key=lambda item: item.get("last_time") or "", reverse=True)
-        cards = []
-        for record in records:
-            url = record.get("url") or "未知RSS"
-            items = record.get("items") or []
-            logs = record.get("logs") or []
-
-            item_blocks = []
-            if items:
-                for item in items:
-                    item_content = [
-                        {
-                            "component": "VCardTitle",
-                            "props": {"class": "text-body-1 break-words"},
-                            "text": item.get("title") or "未命名条目",
-                        },
-                        {
-                            "component": "VCardText",
-                            "text": f"处理结果：{item.get('status_text') or '未处理'}",
-                        },
-                        {
-                            "component": "VCardText",
-                            "text": item.get("message") or "",
-                        },
-                    ]
-                    if item.get("link"):
-                        item_content.append(
-                            {
-                                "component": "div",
-                                "props": {"class": "px-4 pb-2"},
-                                "content": [
-                                    {
-                                        "component": "VBtn",
-                                        "props": {
-                                            "href": item.get("link"),
-                                            "target": "_blank",
-                                            "variant": "text",
-                                            "size": "small",
-                                        },
-                                        "text": "打开条目链接",
-                                    }
-                                ],
-                            }
-                        )
-                    if item.get("pubdate"):
-                        item_content.append(
-                            {
-                                "component": "VCardText",
-                                "text": f"发布时间：{item.get('pubdate')}",
-                            }
-                        )
-                    if item.get("size_text"):
-                        item_content.append(
-                            {
-                                "component": "VCardText",
-                                "text": f"大小：{item.get('size_text')}",
-                            }
-                        )
-                    if item.get("description"):
-                        item_content.append(
-                            {
-                                "component": "VCardText",
-                                "text": f"详情：{item.get('description')}",
-                            }
-                        )
-                    item_blocks.append(
-                        {
-                            "component": "VCard",
-                            "props": {"variant": "tonal", "class": "mx-4 mb-2"},
-                            "content": item_content,
-                        }
-                    )
-            else:
-                item_blocks.append(
-                    {
-                        "component": "VCardText",
-                        "text": "暂无RSS条目详情",
-                    }
-                )
-
-            log_blocks = []
-            if logs:
-                for log_item in logs:
-                    log_blocks.append(
-                        {
-                            "component": "VCardText",
-                            "text": f"[{log_item.get('time')}] [{log_item.get('level')}] {log_item.get('message')}",
-                        }
-                    )
-            else:
-                log_blocks.append(
-                    {
-                        "component": "VCardText",
-                        "text": "暂无执行日志",
-                    }
-                )
-
-            cards.append(
+        historys = sorted(historys, key=lambda item: item.get("time") or "", reverse=True)
+        contents = []
+        for history in historys:
+            title = history.get("title")
+            poster = history.get("poster")
+            mtype = history.get("type")
+            time_str = history.get("time")
+            history_key = history.get("key")
+            contents.append(
                 {
                     "component": "VCard",
                     "content": [
@@ -581,64 +479,61 @@ class SatoshiRss(_PluginBase):
                             "props": {"innerClass": "absolute top-0 right-0"},
                             "events": {
                                 "click": {
-                                    "api": "plugin/SatoshiRss/delete_history",
+                                    "api": "plugin/SatoshiRss/delete_history_item",
                                     "method": "get",
                                     "params": {
-                                        "key": url,
+                                        "key": history_key,
                                         "apikey": settings.API_TOKEN,
                                     },
                                 }
                             },
                         },
                         {
-                            "component": "VCardTitle",
-                            "props": {"class": "pe-10 break-words"},
-                            "text": url,
-                        },
-                        {
-                            "component": "VCardText",
-                            "text": f"最近执行：{record.get('last_time') or '-'}",
-                        },
-                        {
-                            "component": "VCardText",
-                            "text": f"状态：{record.get('status_text') or '-'}",
-                        },
-                        {
-                            "component": "VCardText",
-                            "text": record.get("message") or "",
-                        },
-                        {
                             "component": "div",
-                            "props": {"class": "px-4 pb-2 d-flex flex-wrap ga-2"},
+                            "props": {
+                                "class": "d-flex justify-space-start flex-nowrap flex-row",
+                            },
                             "content": [
                                 {
-                                    "component": "VBtn",
-                                    "props": {
-                                        "href": url,
-                                        "target": "_blank",
-                                        "variant": "text",
-                                        "size": "small",
-                                    },
-                                    "text": "打开RSS链接",
-                                }
+                                    "component": "div",
+                                    "content": [
+                                        {
+                                            "component": "VImg",
+                                            "props": {
+                                                "src": poster,
+                                                "height": 120,
+                                                "width": 80,
+                                                "aspect-ratio": "2/3",
+                                                "class": "object-cover shadow ring-gray-500",
+                                                "cover": True,
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "div",
+                                    "content": [
+                                        {
+                                            "component": "VCardTitle",
+                                            "props": {
+                                                "class": "pa-1 pe-5 break-words whitespace-break-spaces"
+                                            },
+                                            "text": title,
+                                        },
+                                        {
+                                            "component": "VCardText",
+                                            "props": {"class": "pa-0 px-2"},
+                                            "text": f"类型：{mtype}",
+                                        },
+                                        {
+                                            "component": "VCardText",
+                                            "props": {"class": "pa-0 px-2"},
+                                            "text": f"时间：{time_str}",
+                                        },
+                                    ],
+                                },
                             ],
                         },
-                        {"component": "VDivider"},
-                        {
-                            "component": "VCardText",
-                            "text": f"条目总数：{record.get('item_total', 0)}，成功：{record.get('success_total', 0)}，跳过：{record.get('skip_total', 0)}，失败：{record.get('error_total', 0)}",
-                        },
-                        {
-                            "component": "VCardText",
-                            "text": "RSS条目详情",
-                        },
-                        *item_blocks,
-                        {"component": "VDivider"},
-                        {
-                            "component": "VCardText",
-                            "text": "执行日志",
-                        },
-                        *log_blocks,
                     ],
                 }
             )
@@ -646,8 +541,10 @@ class SatoshiRss(_PluginBase):
         return [
             {
                 "component": "div",
-                "props": {"class": "d-flex flex-column ga-3"},
-                "content": cards,
+                "props": {
+                    "class": "grid gap-3 grid-info-card",
+                },
+                "content": contents,
             }
         ]
 
@@ -677,7 +574,7 @@ class SatoshiRss(_PluginBase):
                     "props": {
                         "type": "info",
                         "variant": "tonal",
-                        "text": "还没有已保存的RSS源。新增链接后保存，系统会自动抓取一次详情。",
+                        "text": "还没有已保存的RSS源。先在上面的RSS清单里填好地址并保存。",
                     },
                 }
             ]
@@ -711,6 +608,22 @@ class SatoshiRss(_PluginBase):
                 }
             )
 
+        poster_block = []
+        if record.get("poster"):
+            poster_block = [
+                {
+                    "component": "VImg",
+                    "props": {
+                        "src": record.get("poster"),
+                        "height": 120,
+                        "width": 80,
+                        "aspect-ratio": "2/3",
+                        "class": "object-cover shadow ring-gray-500 mb-2",
+                        "cover": True,
+                    },
+                }
+            ]
+
         return {
             "component": "VExpansionPanel",
             "content": [
@@ -725,8 +638,18 @@ class SatoshiRss(_PluginBase):
                             "content": [
                                 {
                                     "component": "div",
-                                    "props": {"class": "text-subtitle-1 font-weight-medium"},
-                                    "text": record.get("source_name") or record.get("url") or "未命名RSS",
+                                    "content": [
+                                        {
+                                            "component": "div",
+                                            "props": {"class": "text-subtitle-1 font-weight-medium"},
+                                            "text": record.get("display_title") or record.get("source_name") or record.get("url") or "未命名RSS",
+                                        },
+                                        {
+                                            "component": "div",
+                                            "props": {"class": "text-caption"},
+                                            "text": record.get("source_name") or record.get("url") or "",
+                                        },
+                                    ],
                                 },
                                 {
                                     "component": "VChip",
@@ -749,8 +672,9 @@ class SatoshiRss(_PluginBase):
                             "content": [
                                 {
                                     "component": "VCol",
-                                    "props": {"cols": 12, "md": 5},
+                                    "props": {"cols": 12, "md": 4},
                                     "content": [
+                                        *poster_block,
                                         {
                                             "component": "div",
                                             "props": {"class": "mb-2"},
@@ -765,6 +689,11 @@ class SatoshiRss(_PluginBase):
                                             "component": "div",
                                             "props": {"class": "mb-2"},
                                             "text": f"统计：成功 {record.get('success_total', 0)} 个 / 跳过 {record.get('skip_total', 0)} 个 / 失败 {record.get('error_total', 0)} 个",
+                                        },
+                                        {
+                                            "component": "div",
+                                            "props": {"class": "mb-2"},
+                                            "text": f"最近作品：{record.get('display_title') or '-'}",
                                         },
                                         {
                                             "component": "div",
@@ -810,7 +739,7 @@ class SatoshiRss(_PluginBase):
                                 },
                                 {
                                     "component": "VCol",
-                                    "props": {"cols": 12, "md": 7},
+                                    "props": {"cols": 12, "md": 8},
                                     "content": [
                                         {
                                             "component": "div",
@@ -833,11 +762,15 @@ class SatoshiRss(_PluginBase):
             for item in self.__read_detail_records()
             if item.get("url")
         }
+        latest_history_map = self.__latest_history_by_url()
         records = []
         for url in self.__get_rss_urls():
             record = dict(detail_map.get(url) or {})
+            latest_history = latest_history_map.get(url) or {}
             record["url"] = url
             record["source_name"] = self.__source_name(url)
+            record["display_title"] = latest_history.get("title") or record.get("display_title") or record["source_name"]
+            record["poster"] = latest_history.get("poster") or record.get("poster") or ""
             if not record.get("status"):
                 record["status"] = "idle"
                 record["status_text"] = "未获取"
@@ -890,6 +823,18 @@ class SatoshiRss(_PluginBase):
         self.save_data("history", history_items)
         self.save_data("rss_detail_records", detail_records)
         self.__update_config()
+        return schemas.Response(success=True, message="删除成功")
+
+    def delete_history_item(self, key: str, apikey: str):
+        if apikey != settings.API_TOKEN:
+            return schemas.Response(success=False, message="API密钥错误")
+
+        history_items = self.__read_history()
+        if not history_items:
+            return schemas.Response(success=False, message="未找到历史记录")
+
+        history_items = [item for item in history_items if item.get("key") != key]
+        self.save_data("history", history_items)
         return schemas.Response(success=True, message="删除成功")
 
     def __update_config(self):
@@ -1353,6 +1298,17 @@ class SatoshiRss(_PluginBase):
         if not isinstance(history, list):
             return []
         return [item for item in history if isinstance(item, dict)]
+
+    def __latest_history_by_url(self) -> Dict[str, dict]:
+        latest_map: Dict[str, dict] = {}
+        for item in self.__read_history():
+            url = item.get("url")
+            if not url:
+                continue
+            current = latest_map.get(url)
+            if not current or (item.get("time") or "") > (current.get("time") or ""):
+                latest_map[url] = item
+        return latest_map
 
     def __read_detail_records(self) -> List[dict]:
         records = self.get_data("rss_detail_records") or []

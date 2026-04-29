@@ -1,6 +1,5 @@
 import datetime
 import re
-import json
 import traceback
 from pathlib import Path
 from threading import Lock
@@ -19,40 +18,31 @@ from app.core.metainfo import MetaInfo
 from app.helper.rss import RssHelper
 from app.log import logger
 from app.plugins import _PluginBase
+from app.schemas import ExistMediaInfo
 from app.schemas.types import SystemConfigKey, MediaType
 
 lock = Lock()
 
 
 class SatoshiRss(_PluginBase):
-    # 插件名称
     plugin_name = "订阅-Satoshi"
-    # 插件描述
     plugin_desc = "定时刷新RSS报文，识别内容后添加订阅或直接下载。"
-    # 插件图标
     plugin_icon = "customsubscribe.webp"
-    # 插件版本
-    plugin_version = "2.1"
-    # 插件作者
+    plugin_version = "1.2"
     plugin_author = "wwhsaber"
-    # 作者主页
     author_url = "https://github.com/wwhsaber"
-    # 插件配置项ID前缀
     plugin_config_prefix = "satoshirss_"
-    # 加载顺序
     plugin_order = 19
-    # 可使用的用户级别
     auth_level = 2
 
-    # 私有变量
     _scheduler: Optional[BackgroundScheduler] = None
     _cache_path: Optional[Path] = None
 
-    # 配置属性
     _enabled: bool = False
     _cron: str = ""
     _notify: bool = False
     _onlyonce: bool = False
+    _rss_url: str = ""
     _address: str = ""
     _include: str = ""
     _exclude: str = ""
@@ -65,50 +55,57 @@ class SatoshiRss(_PluginBase):
     _size_range: str = ""
 
     def init_plugin(self, config: dict = None):
-
-        # 停止现有任务
         self.stop_service()
 
-        # 配置
+        need_save = False
         if config:
             self.__validate_and_fix_config(config=config)
-            self._enabled = config.get("enabled")
-            self._cron = config.get("cron")
-            self._notify = config.get("notify")
-            self._onlyonce = config.get("onlyonce")
-            self._address = config.get("address")
-            self._include = config.get("include")
-            self._exclude = config.get("exclude")
-            self._proxy = config.get("proxy")
-            self._filter = config.get("filter")
-            self._clear = config.get("clear")
-            self._action = config.get("action")
-            self._save_path = config.get("save_path")
-            self._size_range = config.get("size_range")
+
+            rss_urls = self.__split_rss_urls(config.get("address"))
+            current_input = self.__clean_text(config.get("rss_url"))
+            if current_input:
+                need_save = True
+                if current_input not in rss_urls:
+                    rss_urls.append(current_input)
+
+            self._enabled = bool(config.get("enabled"))
+            self._cron = config.get("cron") or ""
+            self._notify = bool(config.get("notify"))
+            self._onlyonce = bool(config.get("onlyonce"))
+            self._rss_url = ""
+            self._address = "\n".join(rss_urls)
+            self._include = config.get("include") or ""
+            self._exclude = config.get("exclude") or ""
+            self._proxy = bool(config.get("proxy"))
+            self._filter = bool(config.get("filter"))
+            self._clear = bool(config.get("clear"))
+            self._action = config.get("action") or "subscribe"
+            self._save_path = config.get("save_path") or ""
+            self._size_range = config.get("size_range") or ""
+            self.__prune_removed_urls(rss_urls)
 
         if self._onlyonce:
             self._scheduler = BackgroundScheduler(timezone=settings.TZ)
-            logger.info(f"自定义订阅服务启动，立即运行一次")
+            logger.info("自定义订阅服务启动，立即运行一次")
             self._scheduler.add_job(
                 func=self.check,
                 trigger="date",
-                run_date=datetime.datetime.now(tz=pytz.timezone(settings.TZ))
-                + datetime.timedelta(seconds=3),
+                run_date=datetime.datetime.now(
+                    tz=pytz.timezone(settings.TZ)
+                ) + datetime.timedelta(seconds=3),
             )
 
-            # 启动任务
             if self._scheduler.get_jobs():
                 self._scheduler.print_jobs()
                 self._scheduler.start()
 
         if self._onlyonce or self._clear:
-            # 关闭一次性开关
             self._onlyonce = False
-            # 记录清理缓存设置
             self._clearflag = self._clear
-            # 关闭清理缓存开关
             self._clear = False
-            # 保存设置
+            need_save = True
+
+        if need_save:
             self.__update_config()
 
     def get_state(self) -> bool:
@@ -116,69 +113,40 @@ class SatoshiRss(_PluginBase):
 
     @staticmethod
     def get_command() -> List[Dict[str, Any]]:
-        """
-        定义远程控制命令
-        :return: 命令关键字、事件、描述、附带数据
-        """
         pass
 
     def get_api(self) -> List[Dict[str, Any]]:
-        """
-        获取插件API
-        [{
-            "path": "/xx",
-            "endpoint": self.xxx,
-            "methods": ["GET", "POST"],
-            "summary": "API说明"
-        }]
-        """
         return [
             {
                 "path": "/delete_history",
                 "endpoint": self.delete_history,
                 "methods": ["GET"],
-                "summary": "删除自定义订阅历史记录",
+                "summary": "删除RSS详情记录",
             },
             {
-                "path": "/add_rss",
-                "endpoint": self.add_rss,
+                "path": "/refresh_rss",
+                "endpoint": self.refresh_rss,
                 "methods": ["GET"],
-                "summary": "添加RSS订阅",
-            },
-            {
-                "path": "/del_rss",
-                "endpoint": self.del_rss,
-                "methods": ["GET"],
-                "summary": "删除RSS订阅",
+                "summary": "手动刷新RSS详情",
             },
         ]
 
     def get_service(self) -> List[Dict[str, Any]]:
-        """
-        注册插件公共服务
-        [{
-            "id": "服务ID",
-            "name": "服务名称",
-            "trigger": "触发器：cron/interval/date/CronTrigger.from_crontab()",
-            "func": self.xxx,
-            "kwargs": {} # 定时器参数
-        }]
-        """
         if self._enabled and self._cron:
             return [
                 {
-                    "id": "CustomSubscribe",
-                    "name": "自定义订阅pro服务",
+                    "id": "RssSubscribe",
+                    "name": "自定义订阅服务",
                     "trigger": CronTrigger.from_crontab(self._cron),
                     "func": self.check,
                     "kwargs": {},
                 }
             ]
-        elif self._enabled:
+        if self._enabled:
             return [
                 {
-                    "id": "CustomSubscribe",
-                    "name": "自定义订阅pro服务",
+                    "id": "RssSubscribe",
+                    "name": "自定义订阅服务",
                     "trigger": "interval",
                     "func": self.check,
                     "kwargs": {"minutes": 30},
@@ -187,9 +155,6 @@ class SatoshiRss(_PluginBase):
         return []
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
-        """
-        拼装插件配置页面，需要返回两块数据：1、页面配置；2、数据结构
-        """
         return [
             {
                 "component": "VForm",
@@ -279,145 +244,78 @@ class SatoshiRss(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
+                                "props": {"cols": 12, "md": 9},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "rss_url",
+                                            "label": "新增RSS地址",
+                                            "placeholder": "输入单个RSS地址，保存后自动加入下方列表",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VBtn",
+                                        "props": {
+                                            "block": True,
+                                            "color": "primary",
+                                            "variant": "tonal",
+                                        },
+                                        "text": "详情",
+                                        "events": {
+                                            "click": {
+                                                "api": "plugin/SatoshiRss/refresh_rss",
+                                                "method": "get",
+                                                "params": {
+                                                    "apikey": settings.API_TOKEN
+                                                },
+                                            }
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
                                 "props": {"cols": 12},
                                 "content": [
                                     {
-                                        "component": "VCard",
-                                        "props": {"class": "pa-5"},
-                                        "content": [
-                                            {
-                                                "component": "div",
-                                                "class": "d-flex justify-space-between align-center mb-4",
-                                                "content": [
-                                                    {
-                                                        "component": "h3",
-                                                        "text": "RSS地址管理",
-                                                    },
-                                                    {
-                                                        "component": "VBtn",
-                                                        "props": {
-                                                            "color": "primary",
-                                                            "small": True,
-                                                        },
-                                                        "text": "添加RSS",
-                                                        "events": {
-                                                            "click": {
-                                                                "api": "plugin/CustomSubscribe/add_rss",
-                                                                "method": "get",
-                                                                "params": {
-                                                                    "apikey": settings.API_TOKEN
-                                                                },
-                                                            }
-                                                        },
-                                                    },
-                                                ],
-                                            },
-                                            *[
-                                                {
-                                                    "component": "VRow",
-                                                    "props": {"align": "center"},
-                                                    "content": [
-                                                        {
-                                                            "component": "VCol",
-                                                            "props": {
-                                                                "cols": 12,
-                                                                "md": 5,
-                                                            },
-                                                            "content": [
-                                                                {
-                                                                    "component": "VTextField",
-                                                                    "props": {
-                                                                        "model": f"address[{i}].url",
-                                                                        "label": "RSS地址",
-                                                                        "placeholder": "输入RSS URL",
-                                                                        "outlined": True,
-                                                                        "dense": True,
-                                                                        "hide-details": True,
-                                                                    },
-                                                                }
-                                                            ],
-                                                        },
-                                                        {
-                                                            "component": "VCol",
-                                                            "props": {
-                                                                "cols": 12,
-                                                                "md": 3,
-                                                            },
-                                                            "content": [
-                                                                {
-                                                                    "component": "VTextField",
-                                                                    "props": {
-                                                                        "model": f"address[{i}].title",
-                                                                        "label": "标题",
-                                                                        "placeholder": "可选",
-                                                                        "outlined": True,
-                                                                        "dense": True,
-                                                                        "hide-details": True,
-                                                                    },
-                                                                }
-                                                            ],
-                                                        },
-                                                        {
-                                                            "component": "VCol",
-                                                            "props": {
-                                                                "cols": 12,
-                                                                "md": 3,
-                                                            },
-                                                            "content": [
-                                                                {
-                                                                    "component": "VTextField",
-                                                                    "props": {
-                                                                        "model": f"address[{i}].tmdbid",
-                                                                        "label": "TMDB ID",
-                                                                        "placeholder": "可选",
-                                                                        "outlined": True,
-                                                                        "dense": True,
-                                                                        "hide-details": True,
-                                                                    },
-                                                                }
-                                                            ],
-                                                        },
-                                                        {
-                                                            "component": "VCol",
-                                                            "props": {
-                                                                "cols": 12,
-                                                                "md": 1,
-                                                            },
-                                                            "content": [
-                                                                {
-                                                                    "component": "VBtn",
-                                                                    "props": {
-                                                                        "icon": True,
-                                                                        "color": "error",
-                                                                    },
-                                                                    "content": [
-                                                                        {
-                                                                            "component": "VIcon",
-                                                                            "text": "mdi-delete",
-                                                                        }
-                                                                    ],
-                                                                    "events": {
-                                                                        "click": {
-                                                                            "api": "plugin/CustomSubscribe/del_rss",
-                                                                            "method": "get",
-                                                                            "params": {
-                                                                                "index": i,
-                                                                                "apikey": settings.API_TOKEN,
-                                                                            },
-                                                                        }
-                                                                    },
-                                                                }
-                                                            ],
-                                                        },
-                                                    ],
-                                                }
-                                                for i, _ in enumerate(
-                                                    self._address
-                                                    if isinstance(self._address, list)
-                                                    else []
-                                                )
-                                            ],
-                                        ],
+                                        "component": "VAlert",
+                                        "props": {
+                                            "type": "info",
+                                            "variant": "tonal",
+                                            "text": "新增链接时先点页面保存。保存后会自动追加到下方列表；详情按钮会刷新列表里的全部RSS，并把成功或失败日志写到详情页。",
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VTextarea",
+                                        "props": {
+                                            "model": "address",
+                                            "label": "已添加RSS列表",
+                                            "rows": 4,
+                                            "placeholder": "一行一个RSS地址，可直接编辑后保存",
+                                        },
                                     }
                                 ],
                             }
@@ -507,10 +405,7 @@ class SatoshiRss(_PluginBase):
                             },
                             {
                                 "component": "VCol",
-                                "props": {
-                                    "cols": 12,
-                                    "md": 4,
-                                },
+                                "props": {"cols": 12, "md": 4},
                                 "content": [
                                     {
                                         "component": "VSwitch",
@@ -543,7 +438,8 @@ class SatoshiRss(_PluginBase):
             "notify": True,
             "onlyonce": False,
             "cron": "*/30 * * * *",
-            "address": [],
+            "rss_url": "",
+            "address": "",
             "include": "",
             "exclude": "",
             "proxy": False,
@@ -555,96 +451,180 @@ class SatoshiRss(_PluginBase):
         }
 
     def get_page(self) -> List[dict]:
-        """
-        拼装插件详情页面，需要返回页面配置，同时附带数据
-        """
-        # 查询同步详情
-        historys = self.get_data("history")
-        if not historys:
+        records = self.__read_detail_records()
+        if not records:
             return [
                 {
                     "component": "div",
                     "text": "暂无数据",
-                    "props": {
-                        "class": "text-center",
-                    },
+                    "props": {"class": "text-center"},
                 }
             ]
-        # 数据按时间降序排序
-        historys = sorted(historys, key=lambda x: x.get("time"), reverse=True)
-        # 拼装页面
-        contents = []
-        for history in historys:
-            title = history.get("title")
-            poster = history.get("poster")
-            mtype = history.get("type")
-            time_str = history.get("time")
-            contents.append(
+
+        records = sorted(records, key=lambda item: item.get("last_time") or "", reverse=True)
+        cards = []
+        for record in records:
+            url = record.get("url") or "未知RSS"
+            items = record.get("items") or []
+            logs = record.get("logs") or []
+
+            item_blocks = []
+            if items:
+                for item in items:
+                    item_content = [
+                        {
+                            "component": "VCardTitle",
+                            "props": {"class": "text-body-1 break-words"},
+                            "text": item.get("title") or "未命名条目",
+                        },
+                        {
+                            "component": "VCardText",
+                            "text": f"处理结果：{item.get('status_text') or '未处理'}",
+                        },
+                        {
+                            "component": "VCardText",
+                            "text": item.get("message") or "",
+                        },
+                    ]
+                    if item.get("link"):
+                        item_content.append(
+                            {
+                                "component": "div",
+                                "props": {"class": "px-4 pb-2"},
+                                "content": [
+                                    {
+                                        "component": "VBtn",
+                                        "props": {
+                                            "href": item.get("link"),
+                                            "target": "_blank",
+                                            "variant": "text",
+                                            "size": "small",
+                                        },
+                                        "text": "打开条目链接",
+                                    }
+                                ],
+                            }
+                        )
+                    if item.get("pubdate"):
+                        item_content.append(
+                            {
+                                "component": "VCardText",
+                                "text": f"发布时间：{item.get('pubdate')}",
+                            }
+                        )
+                    if item.get("size_text"):
+                        item_content.append(
+                            {
+                                "component": "VCardText",
+                                "text": f"大小：{item.get('size_text')}",
+                            }
+                        )
+                    if item.get("description"):
+                        item_content.append(
+                            {
+                                "component": "VCardText",
+                                "text": f"详情：{item.get('description')}",
+                            }
+                        )
+                    item_blocks.append(
+                        {
+                            "component": "VCard",
+                            "props": {"variant": "tonal", "class": "mx-4 mb-2"},
+                            "content": item_content,
+                        }
+                    )
+            else:
+                item_blocks.append(
+                    {
+                        "component": "VCardText",
+                        "text": "暂无RSS条目详情",
+                    }
+                )
+
+            log_blocks = []
+            if logs:
+                for log_item in logs:
+                    log_blocks.append(
+                        {
+                            "component": "VCardText",
+                            "text": f"[{log_item.get('time')}] [{log_item.get('level')}] {log_item.get('message')}",
+                        }
+                    )
+            else:
+                log_blocks.append(
+                    {
+                        "component": "VCardText",
+                        "text": "暂无执行日志",
+                    }
+                )
+
+            cards.append(
                 {
                     "component": "VCard",
                     "content": [
                         {
                             "component": "VDialogCloseBtn",
-                            "props": {
-                                "innerClass": "absolute top-0 right-0",
-                            },
+                            "props": {"innerClass": "absolute top-0 right-0"},
                             "events": {
                                 "click": {
-                                    "api": "plugin/RssSubscribe/delete_history",
+                                    "api": "plugin/SatoshiRss/delete_history",
                                     "method": "get",
                                     "params": {
-                                        "key": title,
+                                        "key": url,
                                         "apikey": settings.API_TOKEN,
                                     },
                                 }
                             },
                         },
                         {
+                            "component": "VCardTitle",
+                            "props": {"class": "pe-10 break-words"},
+                            "text": url,
+                        },
+                        {
+                            "component": "VCardText",
+                            "text": f"最近执行：{record.get('last_time') or '-'}",
+                        },
+                        {
+                            "component": "VCardText",
+                            "text": f"状态：{record.get('status_text') or '-'}",
+                        },
+                        {
+                            "component": "VCardText",
+                            "text": record.get("message") or "",
+                        },
+                        {
                             "component": "div",
-                            "props": {
-                                "class": "d-flex justify-space-start flex-nowrap flex-row",
-                            },
+                            "props": {"class": "px-4 pb-2 d-flex flex-wrap ga-2"},
                             "content": [
                                 {
-                                    "component": "div",
-                                    "content": [
-                                        {
-                                            "component": "VImg",
-                                            "props": {
-                                                "src": poster,
-                                                "height": 120,
-                                                "width": 80,
-                                                "aspect-ratio": "2/3",
-                                                "class": "object-cover shadow ring-gray-500",
-                                                "cover": True,
-                                            },
-                                        }
-                                    ],
-                                },
-                                {
-                                    "component": "div",
-                                    "content": [
-                                        {
-                                            "component": "VCardTitle",
-                                            "props": {
-                                                "class": "pa-1 pe-5 break-words whitespace-break-spaces"
-                                            },
-                                            "text": title,
-                                        },
-                                        {
-                                            "component": "VCardText",
-                                            "props": {"class": "pa-0 px-2"},
-                                            "text": f"类型：{mtype}",
-                                        },
-                                        {
-                                            "component": "VCardText",
-                                            "props": {"class": "pa-0 px-2"},
-                                            "text": f"时间：{time_str}",
-                                        },
-                                    ],
-                                },
+                                    "component": "VBtn",
+                                    "props": {
+                                        "href": url,
+                                        "target": "_blank",
+                                        "variant": "text",
+                                        "size": "small",
+                                    },
+                                    "text": "打开RSS链接",
+                                }
                             ],
                         },
+                        {"component": "VDivider"},
+                        {
+                            "component": "VCardText",
+                            "text": f"条目总数：{record.get('item_total', 0)}，成功：{record.get('success_total', 0)}，跳过：{record.get('skip_total', 0)}，失败：{record.get('error_total', 0)}",
+                        },
+                        {
+                            "component": "VCardText",
+                            "text": "RSS条目详情",
+                        },
+                        *item_blocks,
+                        {"component": "VDivider"},
+                        {
+                            "component": "VCardText",
+                            "text": "执行日志",
+                        },
+                        *log_blocks,
                     ],
                 }
             )
@@ -652,93 +632,65 @@ class SatoshiRss(_PluginBase):
         return [
             {
                 "component": "div",
-                "props": {
-                    "class": "grid gap-3 grid-info-card",
-                },
-                "content": contents,
+                "props": {"class": "d-flex flex-column ga-3"},
+                "content": cards,
             }
         ]
 
     def stop_service(self):
-        """
-        退出插件
-        """
         try:
             if self._scheduler:
                 self._scheduler.remove_all_jobs()
                 if self._scheduler.running:
                     self._scheduler.shutdown()
                 self._scheduler = None
-        except Exception as e:
-            logger.error("退出插件失败：%s" % str(e))
+        except Exception as err:
+            logger.error("退出插件失败：%s" % str(err))
 
-    def add_rss(self, apikey: str):
-        """
-        添加RSS订阅
-        """
+    def refresh_rss(self, apikey: str):
         if apikey != settings.API_TOKEN:
             return schemas.Response(success=False, message="API密钥错误")
-        if not isinstance(self._address, list):
-            # 初始化
-            self._address = []
-            if self._address and isinstance(self._address, str):
-                # 尝试迁移旧数据
-                try:
-                    self._address = json.loads(self._address)
-                except:
-                    pass
 
-        if not isinstance(self._address, list):
-            self._address = []
+        urls = self.__get_rss_urls()
+        if not urls:
+            return schemas.Response(success=False, message="请先保存至少一个RSS地址")
 
-        self._address.append({"url": "", "title": "", "tmdbid": ""})
-        self.__update_config()
-        return schemas.Response(success=True, message="添加成功")
-
-    def del_rss(self, index: int, apikey: str):
-        """
-        删除RSS订阅
-        """
-        if apikey != settings.API_TOKEN:
-            return schemas.Response(success=False, message="API密钥错误")
-        if not isinstance(self._address, list):
-            return schemas.Response(success=False, message="配置格式错误")
+        if not lock.acquire(blocking=False):
+            return schemas.Response(success=False, message="任务仍在执行中，请稍后再试")
 
         try:
-            index = int(index)
-            if 0 <= index < len(self._address):
-                self._address.pop(index)
-                self.__update_config()
-                return schemas.Response(success=True, message="删除成功")
-        except:
-            pass
-        return schemas.Response(success=False, message="删除失败")
+            summary = self.__run_for_urls(urls=urls, trigger_source="manual")
+        finally:
+            lock.release()
+
+        return schemas.Response(
+            success=summary.get("failed_urls", 0) < summary.get("total_urls", 0),
+            message=summary.get("message") or "刷新完成",
+        )
 
     def delete_history(self, key: str, apikey: str):
-        """
-        删除同步历史记录
-        """
         if apikey != settings.API_TOKEN:
             return schemas.Response(success=False, message="API密钥错误")
-        # 历史记录
-        historys = self.get_data("history")
-        if not historys:
-            return schemas.Response(success=False, message="未找到历史记录")
-        # 删除指定记录
-        historys = [h for h in historys if h.get("title") != key]
-        self.save_data("history", historys)
+
+        rss_urls = [url for url in self.__get_rss_urls() if url != key]
+        history_items = [item for item in self.__read_history() if item.get("url") != key]
+        detail_records = [item for item in self.__read_detail_records() if item.get("url") != key]
+
+        self._address = "\n".join(rss_urls)
+        self._rss_url = ""
+        self.save_data("history", history_items)
+        self.save_data("rss_detail_records", detail_records)
+        self.__update_config()
         return schemas.Response(success=True, message="删除成功")
 
     def __update_config(self):
-        """
-        更新设置
-        """
         self.update_config(
             {
                 "enabled": self._enabled,
                 "notify": self._notify,
                 "onlyonce": self._onlyonce,
                 "cron": self._cron,
+                "rss_url": self._rss_url,
                 "address": self._address,
                 "include": self._include,
                 "exclude": self._exclude,
@@ -752,229 +704,530 @@ class SatoshiRss(_PluginBase):
         )
 
     def check(self):
-        """
-        通过用户RSS同步豆瓣想看数据
-        """
-        if not self._address:
+        urls = self.__get_rss_urls()
+        if not urls:
             return
-        # 读取历史记录
+
+        if not lock.acquire(blocking=False):
+            logger.info("自定义订阅任务仍在执行中，跳过本次运行")
+            return
+
+        try:
+            self.__run_for_urls(urls=urls, trigger_source="schedule")
+        finally:
+            lock.release()
+
+    def __run_for_urls(self, urls: List[str], trigger_source: str) -> Dict[str, Any]:
         if self._clearflag:
-            history = []
+            history: List[dict] = []
+            detail_map: Dict[str, dict] = {}
         else:
-            history: List[dict] = self.get_data("history") or []
+            history = self.__read_history()
+            detail_map = {
+                item.get("url"): item
+                for item in self.__read_detail_records()
+                if item.get("url")
+            }
+
+        processed_keys = {item.get("key") for item in history if item.get("key")}
         downloadchain = DownloadChain()
         subscribechain = SubscribeChain()
+        filter_groups = self.systemconfig.get(SystemConfigKey.SubscribeFilterRuleGroups)
 
-        # 处理地址配置，支持字符串或列表
-        conf_addresses = []
-        if isinstance(self._address, list):
-            conf_addresses = self._address
-        elif isinstance(self._address, str):
-            # 尝试解析JSON
-            try:
-                conf_addresses = json.loads(self._address)
-                if not isinstance(conf_addresses, list):
-                    conf_addresses = [{"url": self._address}]
-            except:
-                # 兼容旧配置：多行字符串
-                lines = self._address.split("\n") if self._address else []
-                conf_addresses = [{"url": line} for line in lines if line]
+        total_urls = 0
+        success_urls = 0
+        failed_urls = 0
 
-        for conf in conf_addresses:
-            # 兼容字典或字符串配置
-            if isinstance(conf, str):
-                url = conf
-                rss_title = None
-                rss_tmdbid = None
-            else:
-                url = conf.get("url")
-                rss_title = conf.get("title")
-                rss_tmdbid = conf.get("tmdbid")
-
-            # 处理每一个RSS链接
-            if not url:
-                continue
-            logger.info(f"开始刷新RSS：{url} ...")
-            results = RssHelper().parse(url, proxy=self._proxy)
-            if not results:
-                logger.error(f"未获取到RSS数据：{url}")
-                continue
-            # 过滤规则
-            filter_groups = self.systemconfig.get(
-                SystemConfigKey.SubscribeFilterRuleGroups
+        for url in urls:
+            total_urls += 1
+            record = self.__handle_single_url(
+                url=url,
+                history=history,
+                processed_keys=processed_keys,
+                downloadchain=downloadchain,
+                subscribechain=subscribechain,
+                filter_groups=filter_groups,
+                trigger_source=trigger_source,
             )
-            # 解析数据
-            for result in results:
-                try:
-                    title = result.get("title")
-                    description = result.get("description")
-                    enclosure = result.get("enclosure")
-                    link = result.get("link")
-                    size = result.get("size")
-                    pubdate: datetime.datetime = result.get("pubdate")
-                    # 检查是否处理过
-                    if not title or title in [h.get("key") for h in history]:
-                        continue
-                    # 检查规则
-                    if self._include and not re.search(
-                        r"%s" % self._include, f"{title} {description}", re.IGNORECASE
-                    ):
-                        logger.info(f"{title} - {description} 不符合包含规则")
-                        continue
-                    if self._exclude and re.search(
-                        r"%s" % self._exclude, f"{title} {description}", re.IGNORECASE
-                    ):
-                        logger.info(f"{title} - {description} 不符合排除规则")
-                        continue
-                    if self._size_range:
-                        sizes = [
-                            float(_size) * 1024**3
-                            for _size in self._size_range.split("-")
-                        ]
-                        if len(sizes) == 1 and float(size) < sizes[0]:
-                            logger.info(f"{title} - 种子大小不符合条件")
-                            continue
-                        elif len(sizes) > 1 and not sizes[0] <= float(size) <= sizes[1]:
-                            logger.info(f"{title} - 种子大小不在指定范围")
-                            continue
-                    # 识别媒体信息
-                    meta = MetaInfo(title=title, subtitle=description)
-                    if not meta.name:
-                        logger.warn(f"{title} 未识别到有效数据")
-                        continue
-                    # 使用配置的TMDB ID辅助识别
-                    tmdbid = int(rss_tmdbid) if rss_tmdbid else None
-                    mediainfo: MediaInfo = self.chain.recognize_media(
-                        meta=meta,
-                        mtype=MediaType.TV,
-                        tmdbid=tmdbid,
-                    )
-                    if not mediainfo:
-                        logger.warn(f"未识别到媒体信息，标题：{title}")
-                        continue
-                    # 种子
-                    torrentinfo = TorrentInfo(
-                        title=title,
-                        description=description,
-                        enclosure=enclosure,
-                        page_url=link,
-                        size=size,
-                        pubdate=(
-                            pubdate.strftime("%Y-%m-%d %H:%M:%S") if pubdate else None
-                        ),
-                        site_proxy=self._proxy,
-                    )
-                    # 过滤种子
-                    if self._filter:
-                        result = self.chain.filter_torrents(
-                            rule_groups=filter_groups,
-                            torrent_list=[torrentinfo],
-                            mediainfo=mediainfo,
-                        )
-                        if not result:
-                            logger.info(f"{title} {description} 不匹配过滤规则")
-                            continue
-                    # 媒体库已存在的剧集
-                    exist_info: Optional[ExistMediaInfo] = self.chain.media_exists(
-                        mediainfo=mediainfo
-                    )
-                    if mediainfo.type == MediaType.TV:
-                        if exist_info:
-                            exist_season = exist_info.seasons
-                            if exist_season:
-                                exist_episodes = exist_season.get(meta.begin_season)
-                                if exist_episodes and set(meta.episode_list).issubset(
-                                    set(exist_episodes)
-                                ):
-                                    logger.info(
-                                        f"{mediainfo.title_year} {meta.season_episode} 己存在"
-                                    )
-                                    continue
-                    elif exist_info:
-                        # 电影已存在
-                        logger.info(f"{mediainfo.title_year} 己存在")
-                        continue
-                    # 下载或订阅
-                    if self._action == "download":
-                        # 添加下载
-                        result = downloadchain.download_single(
-                            context=Context(
-                                meta_info=meta,
-                                media_info=mediainfo,
-                                torrent_info=torrentinfo,
-                            ),
-                            save_path=self._save_path,
-                            username="RSS订阅",
-                        )
-                        if not result:
-                            logger.error(f"{title} 下载失败")
-                            continue
-                    else:
-                        # 检查是否在订阅中
-                        subflag = subscribechain.exists(mediainfo=mediainfo, meta=meta)
-                        if subflag:
-                            logger.info(
-                                f"{mediainfo.title_year} {meta.season} 正在订阅中"
-                            )
-                            continue
-                        # 添加订阅
-                        subscribechain.add(
-                            title=mediainfo.title,
-                            year=mediainfo.year,
-                            mtype=mediainfo.type,
-                            tmdbid=mediainfo.tmdb_id,
-                            season=meta.begin_season,
-                            exist_ok=True,
-                            username="RSS订阅",
-                        )
-                    # 存储历史记录
-                    history.append(
-                        {
-                            "title": f"{mediainfo.title} {meta.season}",
-                            "key": f"{title}",
-                            "type": mediainfo.type.value,
-                            "year": mediainfo.year,
-                            "poster": mediainfo.get_poster_image(),
-                            "overview": mediainfo.overview,
-                            "tmdbid": mediainfo.tmdb_id,
-                            "time": datetime.datetime.now().strftime(
-                                "%Y-%m-%d %H:%M:%S"
-                            ),
-                        }
-                    )
-                except Exception as err:
-                    logger.error(
-                        f"刷新RSS数据出错：{str(err)} - {traceback.format_exc()}"
-                    )
-            logger.info(f"RSS {url} 刷新完成")
-        # 保存历史记录
+            detail_map[url] = record
+            if record.get("status") == "error":
+                failed_urls += 1
+            else:
+                success_urls += 1
+
         self.save_data("history", history)
-        # 缓存只清理一次
+        self.save_data("rss_detail_records", list(detail_map.values()))
         self._clearflag = False
 
-    def __log_and_notify_error(self, message):
-        """
-        记录错误日志并发送系统通知
-        """
+        message = f"共处理 {total_urls} 个RSS，成功 {success_urls} 个，失败 {failed_urls} 个"
+        return {
+            "total_urls": total_urls,
+            "success_urls": success_urls,
+            "failed_urls": failed_urls,
+            "message": message,
+        }
+
+    def __handle_single_url(
+        self,
+        url: str,
+        history: List[dict],
+        processed_keys: set,
+        downloadchain: DownloadChain,
+        subscribechain: SubscribeChain,
+        filter_groups: Any,
+        trigger_source: str,
+    ) -> Dict[str, Any]:
+        now_text = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        logs: List[dict] = []
+        items: List[dict] = []
+        success_total = 0
+        skip_total = 0
+        error_total = 0
+
+        self.__append_run_log(logs, "INFO", f"开始刷新RSS：{url}")
+        results = RssHelper().parse(url, proxy=self._proxy)
+        if results is None:
+            self.__append_run_log(logs, "ERROR", "RSS链接已过期")
+            return self.__build_detail_record(
+                url=url,
+                status="error",
+                message="RSS链接已过期",
+                last_time=now_text,
+                trigger_source=trigger_source,
+                success_total=0,
+                skip_total=0,
+                error_total=1,
+                items=[],
+                logs=logs,
+            )
+
+        if results is False:
+            self.__append_run_log(logs, "ERROR", "获取RSS数据失败")
+            return self.__build_detail_record(
+                url=url,
+                status="error",
+                message="获取RSS数据失败",
+                last_time=now_text,
+                trigger_source=trigger_source,
+                success_total=0,
+                skip_total=0,
+                error_total=1,
+                items=[],
+                logs=logs,
+            )
+
+        self.__append_run_log(logs, "INFO", f"读取到 {len(results)} 条RSS记录")
+        if not results:
+            self.__append_run_log(logs, "INFO", "RSS可访问，但没有可处理条目")
+
+        for result in results:
+            item_info = self.__build_item_info(result)
+            try:
+                item_result = self.__process_rss_item(
+                    url=url,
+                    result=result,
+                    history=history,
+                    processed_keys=processed_keys,
+                    downloadchain=downloadchain,
+                    subscribechain=subscribechain,
+                    filter_groups=filter_groups,
+                    logs=logs,
+                )
+                item_info.update(item_result)
+            except Exception as err:
+                item_info.update(
+                    {
+                        "status": "error",
+                        "status_text": "处理失败",
+                        "message": str(err),
+                    }
+                )
+                self.__append_run_log(
+                    logs,
+                    "ERROR",
+                    f"{item_info.get('title')} 处理异常：{err}",
+                )
+                logger.error(f"刷新RSS数据出错：{str(err)} - {traceback.format_exc()}")
+
+            if item_info.get("status") == "success":
+                success_total += 1
+            elif item_info.get("status") == "skip":
+                skip_total += 1
+            else:
+                error_total += 1
+            items.append(item_info)
+
+        if error_total and success_total:
+            status = "partial"
+        elif error_total and not success_total:
+            status = "error"
+        else:
+            status = "success"
+
+        message = (
+            f"读取 {len(results)} 条，成功 {success_total} 条，跳过 {skip_total} 条，失败 {error_total} 条"
+        )
+        self.__append_run_log(logs, "INFO", f"RSS {url} 刷新完成")
+        return self.__build_detail_record(
+            url=url,
+            status=status,
+            message=message,
+            last_time=now_text,
+            trigger_source=trigger_source,
+            success_total=success_total,
+            skip_total=skip_total,
+            error_total=error_total,
+            items=items,
+            logs=logs,
+        )
+
+    def __process_rss_item(
+        self,
+        url: str,
+        result: dict,
+        history: List[dict],
+        processed_keys: set,
+        downloadchain: DownloadChain,
+        subscribechain: SubscribeChain,
+        filter_groups: Any,
+        logs: List[dict],
+    ) -> Dict[str, Any]:
+        title = result.get("title") or ""
+        description = result.get("description") or ""
+        enclosure = result.get("enclosure") or ""
+        link = result.get("link") or ""
+        size = result.get("size") or 0
+        pubdate: datetime.datetime = result.get("pubdate")
+
+        if not title:
+            self.__append_run_log(logs, "WARNING", "存在标题为空的条目，已跳过")
+            return {
+                "status": "skip",
+                "status_text": "已跳过",
+                "message": "条目标题为空",
+            }
+
+        entry_key = self.__build_history_key(url=url, title=title, enclosure=enclosure, link=link)
+        if entry_key in processed_keys:
+            self.__append_run_log(logs, "INFO", f"{title} 已处理过，跳过")
+            return {
+                "status": "skip",
+                "status_text": "已跳过",
+                "message": "该条目已经处理过",
+            }
+
+        if self._include and not re.search(self._include, f"{title} {description}", re.IGNORECASE):
+            self.__append_run_log(logs, "INFO", f"{title} 不符合包含规则")
+            return {
+                "status": "skip",
+                "status_text": "已跳过",
+                "message": "不符合包含规则",
+            }
+
+        if self._exclude and re.search(self._exclude, f"{title} {description}", re.IGNORECASE):
+            self.__append_run_log(logs, "INFO", f"{title} 不符合排除规则")
+            return {
+                "status": "skip",
+                "status_text": "已跳过",
+                "message": "命中排除规则",
+            }
+
+        if self._size_range:
+            sizes = [float(item) * 1024 ** 3 for item in self._size_range.split("-")]
+            if len(sizes) == 1 and float(size) < sizes[0]:
+                self.__append_run_log(logs, "INFO", f"{title} 种子大小不符合条件")
+                return {
+                    "status": "skip",
+                    "status_text": "已跳过",
+                    "message": "种子大小过小",
+                }
+            if len(sizes) > 1 and not sizes[0] <= float(size) <= sizes[1]:
+                self.__append_run_log(logs, "INFO", f"{title} 种子大小不在指定范围")
+                return {
+                    "status": "skip",
+                    "status_text": "已跳过",
+                    "message": "种子大小不在指定范围",
+                }
+
+        meta = MetaInfo(title=title, subtitle=description)
+        if not meta.name:
+            self.__append_run_log(logs, "WARNING", f"{title} 未识别到有效数据")
+            return {
+                "status": "skip",
+                "status_text": "已跳过",
+                "message": "未识别到有效媒体信息",
+            }
+
+        mediainfo: MediaInfo = self.chain.recognize_media(meta=meta)
+        if not mediainfo:
+            self.__append_run_log(logs, "WARNING", f"{title} 未识别到媒体信息")
+            return {
+                "status": "skip",
+                "status_text": "已跳过",
+                "message": "未识别到媒体信息",
+            }
+
+        torrentinfo = TorrentInfo(
+            title=title,
+            description=description,
+            enclosure=enclosure,
+            page_url=link,
+            size=size,
+            pubdate=pubdate.strftime("%Y-%m-%d %H:%M:%S") if pubdate else None,
+            site_proxy=self._proxy,
+        )
+
+        if self._filter:
+            filtered = self.chain.filter_torrents(
+                rule_groups=filter_groups,
+                torrent_list=[torrentinfo],
+                mediainfo=mediainfo,
+            )
+            if not filtered:
+                self.__append_run_log(logs, "INFO", f"{title} 不匹配过滤规则")
+                return {
+                    "status": "skip",
+                    "status_text": "已跳过",
+                    "message": "不匹配过滤规则",
+                }
+
+        exist_info: Optional[ExistMediaInfo] = self.chain.media_exists(mediainfo=mediainfo)
+        if mediainfo.type == MediaType.TV:
+            if exist_info:
+                exist_season = exist_info.seasons
+                if exist_season:
+                    exist_episodes = exist_season.get(meta.begin_season)
+                    if exist_episodes and set(meta.episode_list).issubset(set(exist_episodes)):
+                        self.__append_run_log(
+                            logs,
+                            "INFO",
+                            f"{mediainfo.title_year} {meta.season_episode} 已存在",
+                        )
+                        return {
+                            "status": "skip",
+                            "status_text": "已跳过",
+                            "message": "媒体库里已存在",
+                        }
+        elif exist_info:
+            self.__append_run_log(logs, "INFO", f"{mediainfo.title_year} 已存在")
+            return {
+                "status": "skip",
+                "status_text": "已跳过",
+                "message": "媒体库里已存在",
+            }
+
+        action_message = ""
+        if self._action == "download":
+            download_hash, error_text = downloadchain.download_single(
+                context=Context(
+                    meta_info=meta,
+                    media_info=mediainfo,
+                    torrent_info=torrentinfo,
+                ),
+                save_path=self._save_path,
+                username="RSS订阅",
+                return_detail=True,
+            )
+            if not download_hash:
+                action_message = error_text or "下载失败"
+                self.__append_run_log(logs, "ERROR", f"{title} 下载失败：{action_message}")
+                return {
+                    "status": "error",
+                    "status_text": "下载失败",
+                    "message": action_message,
+                }
+            action_message = f"下载成功，任务ID：{download_hash}"
+            self.__append_run_log(logs, "INFO", f"{title} 下载成功")
+            success_text = "下载成功"
+        else:
+            if subscribechain.exists(mediainfo=mediainfo, meta=meta):
+                self.__append_run_log(logs, "INFO", f"{mediainfo.title_year} 正在订阅中")
+                return {
+                    "status": "skip",
+                    "status_text": "已跳过",
+                    "message": "该媒体已经在订阅中",
+                }
+
+            subscribechain.add(
+                title=mediainfo.title,
+                year=mediainfo.year,
+                mtype=mediainfo.type,
+                tmdbid=mediainfo.tmdb_id,
+                season=meta.begin_season,
+                exist_ok=True,
+                username="RSS订阅",
+            )
+            action_message = "订阅成功"
+            self.__append_run_log(logs, "INFO", f"{title} 订阅成功")
+            success_text = "订阅成功"
+
+        history.append(
+            {
+                "title": f"{mediainfo.title} {meta.season}".strip(),
+                "key": entry_key,
+                "url": url,
+                "type": mediainfo.type.value,
+                "year": mediainfo.year,
+                "poster": mediainfo.get_poster_image(),
+                "overview": mediainfo.overview,
+                "tmdbid": mediainfo.tmdb_id,
+                "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
+        processed_keys.add(entry_key)
+
+        return {
+            "status": "success",
+            "status_text": success_text,
+            "message": action_message,
+        }
+
+    def __build_detail_record(
+        self,
+        url: str,
+        status: str,
+        message: str,
+        last_time: str,
+        trigger_source: str,
+        success_total: int,
+        skip_total: int,
+        error_total: int,
+        items: List[dict],
+        logs: List[dict],
+    ) -> Dict[str, Any]:
+        status_text_map = {
+            "success": "执行成功",
+            "partial": "部分成功",
+            "error": "执行失败",
+        }
+        return {
+            "url": url,
+            "status": status,
+            "status_text": status_text_map.get(status, status),
+            "message": message,
+            "last_time": last_time,
+            "trigger_source": trigger_source,
+            "item_total": len(items),
+            "success_total": success_total,
+            "skip_total": skip_total,
+            "error_total": error_total,
+            "items": items[:20],
+            "logs": logs[-40:],
+        }
+
+    def __build_item_info(self, result: dict) -> Dict[str, Any]:
+        pubdate = result.get("pubdate")
+        pubdate_text = ""
+        if pubdate:
+            if isinstance(pubdate, datetime.datetime):
+                pubdate_text = pubdate.strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                pubdate_text = str(pubdate)
+
+        return {
+            "title": result.get("title") or "未命名条目",
+            "link": result.get("link") or result.get("enclosure") or "",
+            "description": self.__limit_text(result.get("description") or ""),
+            "pubdate": pubdate_text,
+            "size_text": self.__format_size(result.get("size") or 0),
+            "status": "",
+            "status_text": "",
+            "message": "",
+        }
+
+    def __read_history(self) -> List[dict]:
+        history = self.get_data("history") or []
+        if not isinstance(history, list):
+            return []
+        return [item for item in history if isinstance(item, dict)]
+
+    def __read_detail_records(self) -> List[dict]:
+        records = self.get_data("rss_detail_records") or []
+        if isinstance(records, dict):
+            records = list(records.values())
+        if not isinstance(records, list):
+            return []
+        return [item for item in records if isinstance(item, dict)]
+
+    def __get_rss_urls(self) -> List[str]:
+        return self.__split_rss_urls(self._address)
+
+    def __prune_removed_urls(self, rss_urls: List[str]):
+        active_urls = set(rss_urls)
+        history_items = [item for item in self.__read_history() if item.get("url") in active_urls]
+        detail_records = [item for item in self.__read_detail_records() if item.get("url") in active_urls]
+        self.save_data("history", history_items)
+        self.save_data("rss_detail_records", detail_records)
+
+    @staticmethod
+    def __split_rss_urls(value: Any) -> List[str]:
+        urls: List[str] = []
+        seen = set()
+        for raw in str(value or "").splitlines():
+            url = raw.strip()
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            urls.append(url)
+        return urls
+
+    @staticmethod
+    def __build_history_key(url: str, title: str, enclosure: str, link: str) -> str:
+        return f"{url}||{title}||{enclosure or link or ''}"
+
+    @staticmethod
+    def __clean_text(value: Any) -> str:
+        return str(value or "").strip()
+
+    @staticmethod
+    def __format_size(size: Any) -> str:
+        try:
+            value = float(size)
+        except (TypeError, ValueError):
+            return ""
+        if value <= 0:
+            return ""
+        units = ["B", "KB", "MB", "GB", "TB"]
+        unit_index = 0
+        while value >= 1024 and unit_index < len(units) - 1:
+            value /= 1024
+            unit_index += 1
+        return f"{value:.2f} {units[unit_index]}"
+
+    @staticmethod
+    def __limit_text(value: str, limit: int = 280) -> str:
+        clean_text = re.sub(r"\s+", " ", str(value or "")).strip()
+        if len(clean_text) <= limit:
+            return clean_text
+        return f"{clean_text[:limit]}..."
+
+    def __append_run_log(self, logs: List[dict], level: str, message: str):
+        logs.append(
+            {
+                "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "level": level,
+                "message": message,
+            }
+        )
+        if level == "ERROR":
+            logger.error(message)
+        elif level == "WARNING":
+            logger.warning(message)
+        else:
+            logger.info(message)
+
+    def __log_and_notify_error(self, message: str):
         logger.error(message)
         self.systemmessage.put(message, title="自定义订阅")
 
     def __validate_and_fix_config(self, config: dict = None) -> bool:
-        """
-        检查并修正配置值
-        """
         size_range = config.get("size_range")
         if size_range and not self.__is_number_or_range(str(size_range)):
-            self.__log_and_notify_error(
-                f"自定义订阅出错，种子大小设置错误：{size_range}"
-            )
+            self.__log_and_notify_error(f"自定义订阅出错，种子大小设置错误：{size_range}")
             config["size_range"] = None
             return False
         return True
 
     @staticmethod
     def __is_number_or_range(value):
-        """
-        检查字符串是否表示单个数字或数字范围（如'5', '5.5', '5-10' 或 '5.5-10.2'）
-        """
         return bool(re.match(r"^\d+(\.\d+)?(-\d+(\.\d+)?)?$", value))

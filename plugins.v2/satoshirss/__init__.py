@@ -4,6 +4,7 @@ import traceback
 from pathlib import Path
 from threading import Lock
 from typing import Optional, Any, List, Dict, Tuple
+from urllib.parse import urlparse
 
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -28,7 +29,7 @@ class SatoshiRss(_PluginBase):
     plugin_name = "订阅-Satoshi"
     plugin_desc = "定时刷新RSS报文，识别内容后添加订阅或直接下载。"
     plugin_icon = "customsubscribe.webp"
-    plugin_version = "1.2"
+    plugin_version = "1.3"
     plugin_author = "wwhsaber"
     author_url = "https://github.com/wwhsaber"
     plugin_config_prefix = "satoshirss_"
@@ -58,6 +59,7 @@ class SatoshiRss(_PluginBase):
         self.stop_service()
 
         need_save = False
+        saved_input_url = ""
         if config:
             self.__validate_and_fix_config(config=config)
 
@@ -65,6 +67,7 @@ class SatoshiRss(_PluginBase):
             current_input = self.__clean_text(config.get("rss_url"))
             if current_input:
                 need_save = True
+                saved_input_url = current_input
                 if current_input not in rss_urls:
                     rss_urls.append(current_input)
 
@@ -107,6 +110,8 @@ class SatoshiRss(_PluginBase):
 
         if need_save:
             self.__update_config()
+            if saved_input_url:
+                self.__refresh_urls_safely([saved_input_url], "save")
 
     def get_state(self) -> bool:
         return self._enabled
@@ -155,152 +160,271 @@ class SatoshiRss(_PluginBase):
         return []
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
+        records = self.__build_source_records()
         return [
             {
                 "component": "VForm",
                 "content": [
-                    {
-                        "component": "VRow",
-                        "content": [
+                    self.__build_form_section(
+                        "1. 输入RSS链接",
+                        [
                             {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "component": "VRow",
                                 "content": [
                                     {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "enabled",
-                                            "label": "启用插件",
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "notify",
-                                            "label": "发送通知",
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "onlyonce",
-                                            "label": "立即运行一次",
-                                        },
-                                    }
-                                ],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VCronField",
-                                        "props": {
-                                            "model": "cron",
-                                            "label": "执行周期",
-                                            "placeholder": "5位cron表达式，留空自动",
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VSelect",
-                                        "props": {
-                                            "model": "action",
-                                            "label": "动作",
-                                            "items": [
-                                                {"title": "订阅", "value": "subscribe"},
-                                                {"title": "下载", "value": "download"},
-                                            ],
-                                        },
-                                    }
-                                ],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 9},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "rss_url",
-                                            "label": "新增RSS地址",
-                                            "placeholder": "输入单个RSS地址，保存后自动加入下方列表",
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 3},
-                                "content": [
-                                    {
-                                        "component": "VBtn",
-                                        "props": {
-                                            "block": True,
-                                            "color": "primary",
-                                            "variant": "tonal",
-                                        },
-                                        "text": "详情",
-                                        "events": {
-                                            "click": {
-                                                "api": "plugin/SatoshiRss/refresh_rss",
-                                                "method": "get",
-                                                "params": {
-                                                    "apikey": settings.API_TOKEN
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 9},
+                                        "content": [
+                                            {
+                                                "component": "VTextField",
+                                                "props": {
+                                                    "model": "rss_url",
+                                                    "label": "RSS链接",
+                                                    "placeholder": "输入RSS链接，例如：https://example.com/feed.xml",
                                                 },
                                             }
-                                        },
-                                    }
+                                        ],
+                                    },
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 3},
+                                        "content": [
+                                            {
+                                                "component": "VBtn",
+                                                "props": {
+                                                    "block": True,
+                                                    "color": "primary",
+                                                    "variant": "elevated",
+                                                },
+                                                "text": "获取详情",
+                                                "events": {
+                                                    "click": {
+                                                        "api": "plugin/SatoshiRss/refresh_rss",
+                                                        "method": "get",
+                                                        "params": {
+                                                            "apikey": settings.API_TOKEN
+                                                        },
+                                                    }
+                                                },
+                                            }
+                                        ],
+                                    },
+                                ],
+                            },
+                            {
+                                "component": "VAlert",
+                                "props": {
+                                    "type": "info",
+                                    "variant": "tonal",
+                                    "text": "配置页本身不会把接口结果直接写回输入框。新增RSS后请先保存，保存时会自动抓取一次详情；“获取详情”用于刷新已保存的RSS源状态和日志。",
+                                },
+                            },
+                        ],
+                    ),
+                    self.__build_form_section(
+                        "2. 已配置RSS源",
+                        self.__build_source_section_content(records),
+                    ),
+                    self.__build_form_section(
+                        "3. 下载设置",
+                        [
+                            {
+                                "component": "VRow",
+                                "content": [
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 6},
+                                        "content": [
+                                            {
+                                                "component": "VTextField",
+                                                "props": {
+                                                    "model": "save_path",
+                                                    "label": "保存目录",
+                                                    "placeholder": "/downloads/rss",
+                                                },
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 6},
+                                        "content": [
+                                            {
+                                                "component": "VTextField",
+                                                "props": {
+                                                    "model": "include",
+                                                    "label": "包含关键词",
+                                                    "placeholder": "多个关键词可用逗号或正则表达式",
+                                                },
+                                            }
+                                        ],
+                                    },
+                                ],
+                            },
+                            {
+                                "component": "VRow",
+                                "content": [
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 6},
+                                        "content": [
+                                            {
+                                                "component": "VTextField",
+                                                "props": {
+                                                    "model": "size_range",
+                                                    "label": "种子大小限制(GB)",
+                                                    "placeholder": "如：10 或 3-10",
+                                                },
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 6},
+                                        "content": [
+                                            {
+                                                "component": "VTextField",
+                                                "props": {
+                                                    "model": "exclude",
+                                                    "label": "排除关键词",
+                                                    "placeholder": "多个关键词可用逗号或正则表达式",
+                                                },
+                                            }
+                                        ],
+                                    },
                                 ],
                             },
                         ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
+                    ),
+                    self.__build_form_section(
+                        "4. 运行设置",
+                        [
                             {
-                                "component": "VCol",
-                                "props": {"cols": 12},
+                                "component": "VRow",
                                 "content": [
                                     {
-                                        "component": "VAlert",
-                                        "props": {
-                                            "type": "info",
-                                            "variant": "tonal",
-                                            "text": "新增链接时先点页面保存。保存后会自动追加到下方列表；详情按钮会刷新列表里的全部RSS，并把成功或失败日志写到详情页。",
-                                        },
-                                    }
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 4},
+                                        "content": [
+                                            {
+                                                "component": "VSwitch",
+                                                "props": {
+                                                    "model": "enabled",
+                                                    "label": "启用插件",
+                                                },
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 4},
+                                        "content": [
+                                            {
+                                                "component": "VSwitch",
+                                                "props": {
+                                                    "model": "notify",
+                                                    "label": "发送通知",
+                                                },
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 4},
+                                        "content": [
+                                            {
+                                                "component": "VSwitch",
+                                                "props": {
+                                                    "model": "onlyonce",
+                                                    "label": "立即运行一次",
+                                                },
+                                            }
+                                        ],
+                                    },
                                 ],
-                            }
+                            },
+                            {
+                                "component": "VRow",
+                                "content": [
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 6},
+                                        "content": [
+                                            {
+                                                "component": "VCronField",
+                                                "props": {
+                                                    "model": "cron",
+                                                    "label": "执行周期",
+                                                    "placeholder": "5位cron表达式，留空自动",
+                                                },
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 6},
+                                        "content": [
+                                            {
+                                                "component": "VSelect",
+                                                "props": {
+                                                    "model": "action",
+                                                    "label": "动作",
+                                                    "items": [
+                                                        {"title": "订阅", "value": "subscribe"},
+                                                        {"title": "下载", "value": "download"},
+                                                    ],
+                                                },
+                                            }
+                                        ],
+                                    },
+                                ],
+                            },
+                            {
+                                "component": "VRow",
+                                "content": [
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 4},
+                                        "content": [
+                                            {
+                                                "component": "VSwitch",
+                                                "props": {
+                                                    "model": "proxy",
+                                                    "label": "使用代理服务器",
+                                                },
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 4},
+                                        "content": [
+                                            {
+                                                "component": "VSwitch",
+                                                "props": {
+                                                    "model": "filter",
+                                                    "label": "使用订阅优先级规则",
+                                                },
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "component": "VCol",
+                                        "props": {"cols": 12, "md": 4},
+                                        "content": [
+                                            {
+                                                "component": "VSwitch",
+                                                "props": {
+                                                    "model": "clear",
+                                                    "label": "清理历史记录",
+                                                },
+                                            }
+                                        ],
+                                    },
+                                ],
+                            },
                         ],
-                    },
+                    ),
                     {
                         "component": "VRow",
                         "content": [
@@ -312,119 +436,9 @@ class SatoshiRss(_PluginBase):
                                         "component": "VTextarea",
                                         "props": {
                                             "model": "address",
-                                            "label": "已添加RSS列表",
+                                            "label": "RSS源清单",
                                             "rows": 4,
                                             "placeholder": "一行一个RSS地址，可直接编辑后保存",
-                                        },
-                                    }
-                                ],
-                            }
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "include",
-                                            "label": "包含",
-                                            "placeholder": "支持正则表达式",
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "exclude",
-                                            "label": "排除",
-                                            "placeholder": "支持正则表达式",
-                                        },
-                                    }
-                                ],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "size_range",
-                                            "label": "种子大小(GB)",
-                                            "placeholder": "如：3 或 3-5",
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "save_path",
-                                            "label": "保存目录",
-                                            "placeholder": "下载时有效，留空自动",
-                                        },
-                                    }
-                                ],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "proxy",
-                                            "label": "使用代理服务器",
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "filter",
-                                            "label": "使用订阅优先级规则",
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "clear",
-                                            "label": "清理历史记录",
                                         },
                                     }
                                 ],
@@ -637,6 +651,205 @@ class SatoshiRss(_PluginBase):
             }
         ]
 
+    @staticmethod
+    def __build_form_section(title: str, content: List[dict]) -> dict:
+        return {
+            "component": "VCard",
+            "props": {"variant": "outlined", "class": "mb-4"},
+            "content": [
+                {
+                    "component": "VCardTitle",
+                    "text": title,
+                },
+                {
+                    "component": "div",
+                    "props": {"class": "px-4 pb-4"},
+                    "content": content,
+                },
+            ],
+        }
+
+    def __build_source_section_content(self, records: List[dict]) -> List[dict]:
+        if not records:
+            return [
+                {
+                    "component": "VAlert",
+                    "props": {
+                        "type": "info",
+                        "variant": "tonal",
+                        "text": "还没有已保存的RSS源。新增链接后保存，系统会自动抓取一次详情。",
+                    },
+                }
+            ]
+
+        return [
+            {
+                "component": "VExpansionPanels",
+                "props": {"multiple": True},
+                "content": [self.__build_source_panel(record) for record in records],
+            }
+        ]
+
+    def __build_source_panel(self, record: dict) -> dict:
+        status_text, status_color = self.__status_display(record.get("status"))
+        logs = (record.get("logs") or [])[-5:]
+        log_rows = []
+        if logs:
+            for log_item in logs:
+                log_rows.append(
+                    {
+                        "component": "div",
+                        "props": {"class": "mb-2"},
+                        "text": f"[{log_item.get('time')}] {log_item.get('message')}",
+                    }
+                )
+        else:
+            log_rows.append(
+                {
+                    "component": "div",
+                    "text": "暂无日志",
+                }
+            )
+
+        return {
+            "component": "VExpansionPanel",
+            "content": [
+                {
+                    "component": "VExpansionPanelTitle",
+                    "content": [
+                        {
+                            "component": "div",
+                            "props": {
+                                "class": "d-flex align-center justify-space-between w-100 pe-4"
+                            },
+                            "content": [
+                                {
+                                    "component": "div",
+                                    "props": {"class": "text-subtitle-1 font-weight-medium"},
+                                    "text": record.get("source_name") or record.get("url") or "未命名RSS",
+                                },
+                                {
+                                    "component": "VChip",
+                                    "props": {
+                                        "color": status_color,
+                                        "size": "small",
+                                        "variant": "tonal",
+                                    },
+                                    "text": status_text,
+                                },
+                            ],
+                        }
+                    ],
+                },
+                {
+                    "component": "VExpansionPanelText",
+                    "content": [
+                        {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 5},
+                                    "content": [
+                                        {
+                                            "component": "div",
+                                            "props": {"class": "mb-2"},
+                                            "text": f"RSS链接：{record.get('url') or '-'}",
+                                        },
+                                        {
+                                            "component": "div",
+                                            "props": {"class": "mb-2"},
+                                            "text": f"最后更新时间：{record.get('last_time') or '-'}",
+                                        },
+                                        {
+                                            "component": "div",
+                                            "props": {"class": "mb-2"},
+                                            "text": f"统计：成功 {record.get('success_total', 0)} 个 / 跳过 {record.get('skip_total', 0)} 个 / 失败 {record.get('error_total', 0)} 个",
+                                        },
+                                        {
+                                            "component": "div",
+                                            "props": {"class": "mb-2"},
+                                            "text": f"结果：{record.get('message') or '-'}",
+                                        },
+                                        {
+                                            "component": "div",
+                                            "props": {"class": "d-flex ga-2 flex-wrap"},
+                                            "content": [
+                                                {
+                                                    "component": "VBtn",
+                                                    "props": {
+                                                        "href": record.get("url") or "",
+                                                        "target": "_blank",
+                                                        "variant": "outlined",
+                                                        "size": "small",
+                                                    },
+                                                    "text": "打开RSS",
+                                                },
+                                                {
+                                                    "component": "VBtn",
+                                                    "props": {
+                                                        "color": "error",
+                                                        "variant": "outlined",
+                                                        "size": "small",
+                                                    },
+                                                    "text": "删除",
+                                                    "events": {
+                                                        "click": {
+                                                            "api": "plugin/SatoshiRss/delete_history",
+                                                            "method": "get",
+                                                            "params": {
+                                                                "key": record.get("url"),
+                                                                "apikey": settings.API_TOKEN,
+                                                            },
+                                                        }
+                                                    },
+                                                },
+                                            ],
+                                        },
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 7},
+                                    "content": [
+                                        {
+                                            "component": "div",
+                                            "props": {"class": "font-weight-medium mb-2"},
+                                            "text": "最近日志：",
+                                        },
+                                        *log_rows,
+                                    ],
+                                },
+                            ],
+                        }
+                    ],
+                },
+            ],
+        }
+
+    def __build_source_records(self) -> List[dict]:
+        detail_map = {
+            item.get("url"): item
+            for item in self.__read_detail_records()
+            if item.get("url")
+        }
+        records = []
+        for url in self.__get_rss_urls():
+            record = dict(detail_map.get(url) or {})
+            record["url"] = url
+            record["source_name"] = self.__source_name(url)
+            if not record.get("status"):
+                record["status"] = "idle"
+                record["status_text"] = "未获取"
+                record["message"] = "保存后会自动抓取一次，或点击“获取详情”刷新"
+                record["last_time"] = record.get("last_time") or "-"
+                record["success_total"] = record.get("success_total", 0)
+                record["skip_total"] = record.get("skip_total", 0)
+                record["error_total"] = record.get("error_total", 0)
+                record["logs"] = record.get("logs") or []
+            records.append(record)
+        return records
+
     def stop_service(self):
         try:
             if self._scheduler:
@@ -655,13 +868,9 @@ class SatoshiRss(_PluginBase):
         if not urls:
             return schemas.Response(success=False, message="请先保存至少一个RSS地址")
 
-        if not lock.acquire(blocking=False):
+        summary = self.__refresh_urls_safely(urls=urls, trigger_source="manual")
+        if not summary:
             return schemas.Response(success=False, message="任务仍在执行中，请稍后再试")
-
-        try:
-            summary = self.__run_for_urls(urls=urls, trigger_source="manual")
-        finally:
-            lock.release()
 
         return schemas.Response(
             success=summary.get("failed_urls", 0) < summary.get("total_urls", 0),
@@ -708,14 +917,8 @@ class SatoshiRss(_PluginBase):
         if not urls:
             return
 
-        if not lock.acquire(blocking=False):
+        if not self.__refresh_urls_safely(urls=urls, trigger_source="schedule"):
             logger.info("自定义订阅任务仍在执行中，跳过本次运行")
-            return
-
-        try:
-            self.__run_for_urls(urls=urls, trigger_source="schedule")
-        finally:
-            lock.release()
 
     def __run_for_urls(self, urls: List[str], trigger_source: str) -> Dict[str, Any]:
         if self._clearflag:
@@ -766,6 +969,16 @@ class SatoshiRss(_PluginBase):
             "failed_urls": failed_urls,
             "message": message,
         }
+
+    def __refresh_urls_safely(self, urls: List[str], trigger_source: str) -> Optional[Dict[str, Any]]:
+        if not urls:
+            return None
+        if not lock.acquire(blocking=False):
+            return None
+        try:
+            return self.__run_for_urls(urls=urls, trigger_source=trigger_source)
+        finally:
+            lock.release()
 
     def __handle_single_url(
         self,
@@ -1151,6 +1364,23 @@ class SatoshiRss(_PluginBase):
 
     def __get_rss_urls(self) -> List[str]:
         return self.__split_rss_urls(self._address)
+
+    @staticmethod
+    def __status_display(status: str) -> Tuple[str, str]:
+        if status == "success":
+            return "成功", "success"
+        if status == "partial":
+            return "部分成功", "warning"
+        if status == "error":
+            return "失败", "error"
+        return "未获取", "default"
+
+    @staticmethod
+    def __source_name(url: str) -> str:
+        parsed = urlparse(url or "")
+        if parsed.netloc:
+            return parsed.netloc
+        return url or "未命名RSS"
 
     def __prune_removed_urls(self, rss_urls: List[str]):
         active_urls = set(rss_urls)

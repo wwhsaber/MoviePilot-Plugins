@@ -29,7 +29,7 @@ class SatoshiRss(_PluginBase):
     plugin_name = "订阅-Satoshi"
     plugin_desc = "定时刷新RSS报文，识别内容后添加订阅或直接下载。"
     plugin_icon = "customsubscribe.webp"
-    plugin_version = "1.3"
+    plugin_version = "2.2"
     plugin_author = "wwhsaber"
     author_url = "https://github.com/wwhsaber"
     plugin_config_prefix = "satoshirss_"
@@ -1120,6 +1120,8 @@ class SatoshiRss(_PluginBase):
         if not mediainfo:
             self.__append_run_log(logs, "WARNING", f"{title} 未识别到媒体信息")
             return {
+                "media_title": meta.name or title,
+                "media_poster": "",
                 "status": "skip",
                 "status_text": "已跳过",
                 "message": "未识别到媒体信息",
@@ -1155,6 +1157,8 @@ class SatoshiRss(_PluginBase):
             if exist_flag:
                 self.__append_run_log(logs, "INFO", f"{mediainfo.title_year} 媒体库中已存在")
                 return {
+                    "media_title": self.__media_display_title(mediainfo, meta),
+                    "media_poster": mediainfo.get_poster_image(),
                     "status": "skip",
                     "status_text": "已跳过",
                     "message": "媒体库中已存在",
@@ -1167,6 +1171,8 @@ class SatoshiRss(_PluginBase):
                     if not season_info:
                         self.__append_run_log(logs, "INFO", f"{mediainfo.title_year} {meta.season} 已存在")
                         return {
+                            "media_title": self.__media_display_title(mediainfo, meta),
+                            "media_poster": mediainfo.get_poster_image(),
                             "status": "skip",
                             "status_text": "已跳过",
                             "message": "该季已存在",
@@ -1178,6 +1184,8 @@ class SatoshiRss(_PluginBase):
                             f"{mediainfo.title_year} {meta.season_episode} 已存在",
                         )
                         return {
+                            "media_title": self.__media_display_title(mediainfo, meta),
+                            "media_poster": mediainfo.get_poster_image(),
                             "status": "skip",
                             "status_text": "已跳过",
                             "message": "剧集已存在",
@@ -1197,6 +1205,8 @@ class SatoshiRss(_PluginBase):
                 action_message = error_text or "下载失败"
                 self.__append_run_log(logs, "ERROR", f"{title} 下载失败：{action_message}")
                 return {
+                    "media_title": self.__media_display_title(mediainfo, meta),
+                    "media_poster": mediainfo.get_poster_image(),
                     "status": "error",
                     "status_text": "下载失败",
                     "message": action_message,
@@ -1218,6 +1228,8 @@ class SatoshiRss(_PluginBase):
                                 f"{mediainfo.title_year} {meta.season_episode} 已存在",
                             )
                             return {
+                                "media_title": self.__media_display_title(mediainfo, meta),
+                                "media_poster": mediainfo.get_poster_image(),
                                 "status": "skip",
                                 "status_text": "已跳过",
                                 "message": "媒体库里已存在",
@@ -1225,6 +1237,8 @@ class SatoshiRss(_PluginBase):
             elif exist_info:
                 self.__append_run_log(logs, "INFO", f"{mediainfo.title_year} 已存在")
                 return {
+                    "media_title": self.__media_display_title(mediainfo, meta),
+                    "media_poster": mediainfo.get_poster_image(),
                     "status": "skip",
                     "status_text": "已跳过",
                     "message": "媒体库里已存在",
@@ -1233,6 +1247,8 @@ class SatoshiRss(_PluginBase):
             if subscribechain.exists(mediainfo=mediainfo, meta=meta):
                 self.__append_run_log(logs, "INFO", f"{mediainfo.title_year} 正在订阅中")
                 return {
+                    "media_title": self.__media_display_title(mediainfo, meta),
+                    "media_poster": mediainfo.get_poster_image(),
                     "status": "skip",
                     "status_text": "已跳过",
                     "message": "该媒体已经在订阅中",
@@ -1267,6 +1283,8 @@ class SatoshiRss(_PluginBase):
         processed_keys.add(entry_key)
 
         return {
+            "media_title": self.__media_display_title(mediainfo, meta),
+            "media_poster": mediainfo.get_poster_image(),
             "status": "success",
             "status_text": success_text,
             "message": action_message,
@@ -1294,6 +1312,8 @@ class SatoshiRss(_PluginBase):
             "url": url,
             "status": status,
             "status_text": status_text_map.get(status, status),
+            "display_title": self.__pick_record_title(items),
+            "poster": self.__pick_record_poster(items),
             "message": message,
             "last_time": last_time,
             "trigger_source": trigger_source,
@@ -1320,6 +1340,8 @@ class SatoshiRss(_PluginBase):
             "description": self.__limit_text(result.get("description") or ""),
             "pubdate": pubdate_text,
             "size_text": self.__format_size(result.get("size") or 0),
+            "media_title": "",
+            "media_poster": "",
             "status": "",
             "status_text": "",
             "message": "",
@@ -1369,6 +1391,31 @@ class SatoshiRss(_PluginBase):
         if parsed.netloc:
             return parsed.netloc
         return url or "未命名RSS"
+
+    @staticmethod
+    def __media_display_title(mediainfo: MediaInfo, meta: MetaInfo) -> str:
+        season_text = meta.season or ""
+        return f"{mediainfo.title} {season_text}".strip()
+
+    @staticmethod
+    def __pick_record_title(items: List[dict]) -> str:
+        for item in items:
+            media_title = item.get("media_title")
+            if media_title:
+                return media_title
+        for item in items:
+            title = item.get("title")
+            if title:
+                return title
+        return ""
+
+    @staticmethod
+    def __pick_record_poster(items: List[dict]) -> str:
+        for item in items:
+            media_poster = item.get("media_poster")
+            if media_poster:
+                return media_poster
+        return ""
 
     def __prune_removed_urls(self, rss_urls: List[str]):
         active_urls = set(rss_urls)

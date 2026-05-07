@@ -29,7 +29,7 @@ class SatoshiRss(_PluginBase):
     plugin_name = "订阅-Satoshi"
     plugin_desc = "定时刷新RSS报文，识别内容后添加订阅或直接下载。"
     plugin_icon = "customsubscribe.webp"
-    plugin_version = "2.2"
+    plugin_version = "2.3"
     plugin_author = "wwhsaber"
     author_url = "https://github.com/wwhsaber"
     plugin_config_prefix = "satoshirss_"
@@ -170,6 +170,9 @@ class SatoshiRss(_PluginBase):
         return [
             {
                 "component": "VForm",
+                "props": {
+                    "style": "max-height: 70vh; overflow-y: auto; padding-right: 8px;"
+                },
                 "content": [
                     self.__build_form_section(
                         "1. RSS清单",
@@ -1109,21 +1112,21 @@ class SatoshiRss(_PluginBase):
 
         meta = MetaInfo(title=title, subtitle=description)
         if not meta.name:
-            self.__append_run_log(logs, "WARNING", f"{title} 未识别到有效数据")
+            self.__append_run_log(logs, "ERROR", f"{title} 未识别到有效数据")
             return {
-                "status": "skip",
-                "status_text": "已跳过",
+                "status": "error",
+                "status_text": "识别失败",
                 "message": "未识别到有效媒体信息",
             }
 
         mediainfo: MediaInfo = self.chain.recognize_media(meta=meta)
         if not mediainfo:
-            self.__append_run_log(logs, "WARNING", f"{title} 未识别到媒体信息")
+            self.__append_run_log(logs, "ERROR", f"{title} 未识别到媒体信息")
             return {
                 "media_title": meta.name or title,
                 "media_poster": "",
-                "status": "skip",
-                "status_text": "已跳过",
+                "status": "error",
+                "status_text": "识别失败",
                 "message": "未识别到媒体信息",
             }
 

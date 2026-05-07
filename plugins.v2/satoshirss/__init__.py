@@ -1149,13 +1149,29 @@ class SatoshiRss(_PluginBase):
                     "message": "不匹配过滤规则",
                 }
 
-        exist_info: Optional[ExistMediaInfo] = self.chain.media_exists(mediainfo=mediainfo)
-        if mediainfo.type == MediaType.TV:
-            if exist_info:
-                exist_season = exist_info.seasons
-                if exist_season:
-                    exist_episodes = exist_season.get(meta.begin_season)
-                    if exist_episodes and set(meta.episode_list).issubset(set(exist_episodes)):
+        action_message = ""
+        if self._action == "download":
+            exist_flag, no_exists = downloadchain.get_no_exists_info(meta=meta, mediainfo=mediainfo)
+            if exist_flag:
+                self.__append_run_log(logs, "INFO", f"{mediainfo.title_year} 媒体库中已存在")
+                return {
+                    "status": "skip",
+                    "status_text": "已跳过",
+                    "message": "媒体库中已存在",
+                }
+
+            if mediainfo.type == MediaType.TV and no_exists:
+                season_group = no_exists.get(mediainfo.tmdb_id) if mediainfo.tmdb_id else None
+                if season_group:
+                    season_info = season_group.get(meta.begin_season or 1)
+                    if not season_info:
+                        self.__append_run_log(logs, "INFO", f"{mediainfo.title_year} {meta.season} 已存在")
+                        return {
+                            "status": "skip",
+                            "status_text": "已跳过",
+                            "message": "该季已存在",
+                        }
+                    if season_info.episodes and not set(meta.episode_list).issubset(set(season_info.episodes)):
                         self.__append_run_log(
                             logs,
                             "INFO",
@@ -1164,18 +1180,9 @@ class SatoshiRss(_PluginBase):
                         return {
                             "status": "skip",
                             "status_text": "已跳过",
-                            "message": "媒体库里已存在",
+                            "message": "剧集已存在",
                         }
-        elif exist_info:
-            self.__append_run_log(logs, "INFO", f"{mediainfo.title_year} 已存在")
-            return {
-                "status": "skip",
-                "status_text": "已跳过",
-                "message": "媒体库里已存在",
-            }
 
-        action_message = ""
-        if self._action == "download":
             download_hash, error_text = downloadchain.download_single(
                 context=Context(
                     meta_info=meta,
@@ -1198,6 +1205,31 @@ class SatoshiRss(_PluginBase):
             self.__append_run_log(logs, "INFO", f"{title} 下载成功")
             success_text = "下载成功"
         else:
+            exist_info: Optional[ExistMediaInfo] = self.chain.media_exists(mediainfo=mediainfo)
+            if mediainfo.type == MediaType.TV:
+                if exist_info:
+                    exist_season = exist_info.seasons
+                    if exist_season:
+                        exist_episodes = exist_season.get(meta.begin_season)
+                        if exist_episodes and set(meta.episode_list).issubset(set(exist_episodes)):
+                            self.__append_run_log(
+                                logs,
+                                "INFO",
+                                f"{mediainfo.title_year} {meta.season_episode} 已存在",
+                            )
+                            return {
+                                "status": "skip",
+                                "status_text": "已跳过",
+                                "message": "媒体库里已存在",
+                            }
+            elif exist_info:
+                self.__append_run_log(logs, "INFO", f"{mediainfo.title_year} 已存在")
+                return {
+                    "status": "skip",
+                    "status_text": "已跳过",
+                    "message": "媒体库里已存在",
+                }
+
             if subscribechain.exists(mediainfo=mediainfo, meta=meta):
                 self.__append_run_log(logs, "INFO", f"{mediainfo.title_year} 正在订阅中")
                 return {

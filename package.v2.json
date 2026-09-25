@@ -10,20 +10,5 @@
         "history": {
             "v2.1": "init"
         }
-    },
-    "RssSubscribeSeasonFix": {
-        "name": "自定义订阅（季号修复版）",
-        "description": "定时刷新 RSS；优先使用 MoviePilot 默认识别，失败后按媒体库缓存匹配，并改进番剧季集号解析。",
-        "labels": "订阅",
-        "version": "1.0.2",
-        "icon": "customsubscribe.webp",
-        "author": "wwhsaber",
-        "level": 2,
-        "system_version": ">=3.0.8",
-        "history": {
-            "v1.0.2": "参考 ANI-RSS 改进字幕组/季集号解析；默认识别失败后以唯一媒体库缓存身份回退。",
-            "v1.0.1": "预处理星号分隔的番剧标题，避免字幕组发布格式干扰解析。",
-            "v1.0.0": "修复 RSS 标题未写季号时媒体库比对使用空季号的问题。"
-        }
     }
 }
